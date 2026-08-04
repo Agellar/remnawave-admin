@@ -5751,7 +5751,8 @@
           "unique_ips": "Unique IPs",
           "unique_countries": "Countries",
           "unique_asns": "ASNs",
-          "anomalies": "Anomalies"
+          "anomalies": "Anomalies",
+          "stale_source": "Subscription request history sync has stalled: the newest record in the database is {{ts}}. The date below is stale, so we draw no conclusions from it."
         },
         "hypotheses": {
           "show_more": "{{n}} more",
@@ -5763,6 +5764,21 @@
             "reset_traffic": "Reset traffic",
             "notify_update": "Notify about update"
           }
+        },
+        "loading": {
+          "stages": {
+            "account": "Reading account and subscription…",
+            "connections": "Collecting the last 24h of connections…",
+            "nodes": "Checking node health…",
+            "clusters": "Looking for cluster-wide problems by ASN and node…",
+            "ai": "The model is analysing the case…"
+          },
+          "slow_hint": "The model takes 10–20 seconds to answer — that's expected."
+        },
+        "reply_draft": {
+          "title": "Draft reply to the customer",
+          "copy": "Copy",
+          "hint": "Model-generated. Read it before sending — the wording is on you, not on the model."
         }
       },
       "audit": {
@@ -5931,6 +5947,133 @@
             "help": "Older clusters are not surfaced in reports even if still in DB."
           }
         }
+      }
+    },
+    "retention_radar": {
+      "nav": "Retention Radar",
+      "title": "Retention Radar",
+      "subtitle": "{{total}} users total, {{active}} active. Below are the ones leaving quietly.",
+      "error": "Could not load the data.",
+      "back": "Back to overview",
+      "export": "Download CSV",
+      "export_failed": "Export failed.",
+      "unknown_segment": "No such segment.",
+      "segment_empty": "This segment is empty right now.",
+      "segment_empty_hint": "Either everything is fine, or the thresholds are too strict — you can adjust them in settings.",
+      "never_online": "never connected",
+      "days": "{{n}}d",
+      "days_ago": "{{n}}d ago",
+      "at_risk": "at risk",
+      "open_report": "Open diagnostics in Smart Support",
+      "prev": "Previous",
+      "next": "Next",
+      "pagination": "{{from}}–{{to}} of {{total}}",
+      "history_warming": "Daily snapshots have been collected since {{since}}. Trends appear once there are at least two days.",
+      "segments": {
+        "silent": {
+          "title": "Quietly gone",
+          "hint": "Subscription is still valid, but the person stopped showing up."
+        },
+        "expiring": {
+          "title": "Expiring soon",
+          "hint": "Subscription ends in days — a good moment to remind them."
+        },
+        "lapsed": {
+          "title": "Lapsed, not back",
+          "hint": "Subscription ended recently and was never renewed."
+        },
+        "stalled": {
+          "title": "Never started",
+          "hint": "Account created, but not a single connection was ever made."
+        }
+      },
+      "attention": {
+        "title": "Urgent right now",
+        "row": "Expires in {{days}}d, offline: {{silent}}",
+        "empty": "Nothing urgent.",
+        "empty_hint": "People whose subscription ends in days while they have already stopped connecting will show up here."
+      },
+      "columns": {
+        "user": "User",
+        "last_online": "Last online",
+        "expire": "Expires",
+        "telegram": "Telegram"
+      },
+      "settings": {
+        "link": "Settings",
+        "title": "Retention Radar thresholds",
+        "subtitle": "Segment boundaries. Defaults assume monthly subscriptions.",
+        "save": "Save",
+        "saved": "Thresholds saved.",
+        "save_failed": "Could not save.",
+        "fields": {
+          "silent_days": "Silence = churn, days",
+          "silent_deep_days": "Deep silence, days",
+          "expiring_days": "\"Expiring soon\" window, days",
+          "expiring_risk_days": "Silence before expiry, days",
+          "lapsed_days": "Win-back window, days",
+          "onboarding_days": "First-connection window, days",
+          "trend_days": "Trend depth, days",
+          "snapshot_recompute_seconds": "Snapshot recompute, seconds",
+          "discount_expiring": "\"Expiring soon\" discount, %",
+          "discount_silent": "\"Quietly gone\" discount, %",
+          "discount_lapsed": "\"Lapsed\" discount, %",
+          "discount_stalled": "\"Never started\" discount, %",
+          "offer_valid_hours": "Discount lifetime, hours",
+          "message_cooldown_days": "Do not message more often than every N days",
+          "max_recipients_per_campaign": "Max recipients per campaign",
+          "skip_days_before_expire": "Quarantine before expiry, days",
+          "skip_days_after_expire": "Quarantine after expiry, days"
+        },
+        "hints": {
+          "silent_days": "How many days offline count as churn.",
+          "silent_deep_days": "Rows past this threshold are flagged as at risk.",
+          "expiring_days": "How early before expiry to start reminding.",
+          "expiring_risk_days": "This much silence before expiry means they probably won't renew.",
+          "lapsed_days": "How long after expiry a person is still winnable.",
+          "onboarding_days": "How long a new account may go without connecting.",
+          "trend_days": "How many days of history the tiles show.",
+          "snapshot_recompute_seconds": "How often the daily snapshot is recomputed.",
+          "discount_expiring": "They still use the service — a reminder is usually enough.",
+          "discount_silent": "Subscription is alive, but they stopped connecting.",
+          "discount_lapsed": "Already gone, winning them back costs more.",
+          "discount_stalled": "Paid and never connected — they need help, not a discount.",
+          "offer_valid_hours": "How long the issued discount stays valid.",
+          "message_cooldown_days": "Keeps one person from getting a stream of messages.",
+          "max_recipients_per_campaign": "Ceiling for a single send.",
+          "skip_days_before_expire": "Bedolaga reminds at 3 and 1 day — we stay out of it.",
+          "skip_days_after_expire": "Its discount ladder runs until day 5 after expiry."
+        }
+      },
+      "campaign": {
+        "start": "Campaign",
+        "back": "Back to segment",
+        "title": "Campaign: {{segment}}",
+        "summary": "{{n}} recipients. {{percent}}% discount, valid for {{hours}} hours.",
+        "skipped_title": "Who is left out:",
+        "skip_no_telegram": "{{n}} — no Telegram ID, nowhere to write",
+        "skip_cooldown": "{{n}} — messaged recently",
+        "skip_limit": "{{n}} — over the per-campaign limit",
+        "text_title": "Message text",
+        "regenerate": "Regenerate",
+        "ai_failed": "The model did not answer ({{reason}}) — write the text yourself.",
+        "text_hint": "{{n}} characters. Sent as is, without greeting or signature.",
+        "dry_run": "Dry run",
+        "arm": "Send for real",
+        "confirm": "Yes, send to {{n}} people",
+        "dirty": "Text changed — run a new dry run.",
+        "dry_run_done": "Dry run: {{n}} recipients would be reached, nothing was sent.",
+        "sent_done": "Sent. Recipients: {{n}}, discounts created: {{offers}}.",
+        "sent_toast": "Campaign is out.",
+        "stale": "The audience changed — preview refreshed, please review again.",
+        "failed": "Could not send. {{reason}}",
+        "sample_title": "Sample recipients",
+        "skip_bedolaga": "{{n}} — currently handled by Bedolaga automation",
+        "quarantine_note": "People the bot handles itself (3- and 1-day reminders, post-expiry discount waves) are left out of the campaign.",
+        "empty_audience": "Nobody to write to: everyone matching the segment is either already getting Bedolaga's automatic messages or was recently included in one of our campaigns.",
+        "button_hint": "The button under the message. Opens the subscription section in the bot, where the discount is already waiting.",
+        "warnings_title": "The text promises things the system will not do:",
+        "warnings_hint": "The button connects nothing and starts no payment — it only opens the subscription section. Remove these phrases."
       }
     }
   },

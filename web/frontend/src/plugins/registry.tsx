@@ -30,6 +30,12 @@ export const PLUGIN_ROUTES: Record<string, PluginRoute[]> = {
     { path: '/plugins/smart-support/settings', Component: lazy(() => import('./smart-support/SettingsPage')) },
     { path: '/plugins/smart-support/audit', Component: lazy(() => import('./smart-support/AuditPage')) },
   ],
+  retention_radar: [
+    { path: '/plugins/retention-radar', Component: lazy(() => import('./retention-radar/DashboardPage')) },
+    { path: '/plugins/retention-radar/segment/:key', Component: lazy(() => import('./retention-radar/SegmentPage')) },
+    { path: '/plugins/retention-radar/campaign/:key', Component: lazy(() => import('./retention-radar/CampaignPage')) },
+    { path: '/plugins/retention-radar/settings', Component: lazy(() => import('./retention-radar/SettingsPage')) },
+  ],
   block_radar: [
     { path: '/plugins/block-radar', Component: lazy(() => import('./block-radar/RadarPage')) },
     { path: '/plugins/block-radar/settings', Component: lazy(() => import('./block-radar/SettingsPage')) },

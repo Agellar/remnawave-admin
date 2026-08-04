@@ -13,6 +13,7 @@ import {
   Globe2,
   History,
   Lightbulb,
+  MessageSquare,
   ShieldAlert,
   Smartphone,
   Sparkles,
@@ -30,6 +31,7 @@ import {
 } from './actions'
 import { asLicenseError, fetchReport, fetchSessionsForUser } from './api'
 import {
+  CopyButton,
   CopyChip,
   EmptyState,
   ReportSkeleton,
@@ -296,6 +298,28 @@ function AIAnalysisCard({ report }: { report: ReportResponse }) {
         </div>
       </div>
       <p className="text-sm text-dark-100 leading-relaxed whitespace-pre-line">{a.summary}</p>
+      {/* Черновик ответа клиенту: то, что саппорт скопирует в чат.
+          Визуально отделён от разбора — разбор для инженера, это для юзера. */}
+      {a.reply_draft && (
+        <div className="mt-4 rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] p-3">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-dark-300">
+              <MessageSquare className="w-3.5 h-3.5" aria-hidden />
+              {t('plugins.smart_support.report.reply_draft.title')}
+            </div>
+            <CopyButton
+              value={a.reply_draft}
+              label={t('plugins.smart_support.report.reply_draft.copy')}
+            />
+          </div>
+          <p className="text-sm text-dark-100 leading-relaxed whitespace-pre-line">
+            {a.reply_draft}
+          </p>
+          <p className="mt-2 text-[11px] text-dark-400">
+            {t('plugins.smart_support.report.reply_draft.hint')}
+          </p>
+        </div>
+      )}
       {a.extra_hypotheses.length > 0 && (
         <ul className="mt-4 space-y-2">
           {a.extra_hypotheses.map((h) => (
@@ -489,6 +513,15 @@ function ClientCard({ report }: { report: ReportResponse }) {
       {c.is_outdated && (
         <div className="mt-2 text-xs text-amber-400">
           {t('plugins.smart_support.report.fields.outdated_warning')}
+        </div>
+      )}
+      {/* Дату показываем всегда, но если синк панели встал — честно
+          предупреждаем, что она не про поведение клиента. */}
+      {c.source_stale && (
+        <div className="mt-2 text-xs text-amber-400">
+          {t('plugins.smart_support.report.fields.stale_source', {
+            ts: fmtDate(c.source_newest_at),
+          })}
         </div>
       )}
     </Section>

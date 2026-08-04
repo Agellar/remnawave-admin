@@ -98,6 +98,9 @@ export interface ClientSection {
   last_request_at?: string | null
   is_outdated?: boolean | null
   days_since_last_request?: number | null
+  /** Синк истории запросов подписки встал — дате верить нельзя. */
+  source_stale?: boolean
+  source_newest_at?: string | null
 }
 
 export interface NodeCard {
@@ -154,6 +157,8 @@ export interface AIAnalysis {
   summary: string
   extra_hypotheses: AIExtraHypothesis[]
   confidence: 'low' | 'medium' | 'high'
+  /** Готовое сообщение клиенту — саппорт копирует его в чат как есть. */
+  reply_draft?: string | null
   provider_used: string
   model?: string | null
 }

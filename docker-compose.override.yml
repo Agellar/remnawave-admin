@@ -1,0 +1,39 @@
+# Local overrides — keep services internal-only (reached via shared Caddy network).
+# Not tracked upstream, survives git pull.
+services:
+  # Bot disabled for now: server blocks most Telegram IPs (IPv6 dead).
+  # Re-enable after setting up WARP/proxy egress.
+  bot:
+    deploy:
+      replicas: 0
+    ports: !reset []
+
+  web-backend:
+    ports: !reset []
+    depends_on:
+      bedolaga-tunnel:
+        condition: service_started
+    # Свой плагин Smart Support: исходники смонтированы в /app, откуда их
+    # видит загрузчик плагинов через RWA_DEV_PLUGINS. Wheel не собираем —
+    # правка + рестарт контейнера быстрее и переживает docker compose pull.
+    volumes:
+      - ./plugins-src/rwa_smart_support:/app/rwa_smart_support:ro
+      - ./plugins-src/rwa_retention_radar:/app/rwa_retention_radar:ro
+    environment:
+      RWA_DEV_PLUGINS: rwa_smart_support.plugin:manifest,rwa_retention_radar.plugin:manifest
+
+  web-frontend:
+    ports: !reset []
+
+  # Приватный канал к Bedolaga Bot Web API на 193.53.40.18.
+  # Тот API слушает только 127.0.0.1, наружу не выставлен — ходим через SSH.
+  # Порт 8080 контейнера виден лишь внутри remnawave-network.
+  bedolaga-tunnel:
+    build: ./tunnel
+    image: bedolaga-api-tunnel:local
+    container_name: bedolaga-api-tunnel
+    restart: unless-stopped
+    networks:
+      - remnawave-network
+    volumes:
+      - ./tunnel/keys:/keys:ro
