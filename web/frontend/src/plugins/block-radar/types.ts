@@ -56,7 +56,13 @@ export interface RadarAffected {
 
 export interface RadarAlert {
   id: number
-  kind: 'block' | 'operator_outage'
+  kind: 'block' | 'operator_outage' | 'hoster_outage'
+  /**
+   * operator — известно, у чьих абонентов пропал доступ; hoster — просел весь
+   * хостер, а разбор по операторам не набрал людей. Старый плагин поля не
+   * шлёт, такие алерты считаем операторскими.
+   */
+  scope?: 'operator' | 'hoster'
   op_asn: number
   op_org?: string | null
   host_asn: number
@@ -92,3 +98,78 @@ export interface RadarSettings {
 }
 
 export type RadarSettingsPatch = Partial<RadarSettings>
+
+/** Один хостер в рейтинге. Аварии и блокировки разведены намеренно:
+ *  за первое отвечает хостер, за второе — нет, но выбирать площадку
+ *  приходится с оглядкой на оба. */
+export interface RadarHoster {
+  asn: number
+  org: string | null
+  mine: boolean
+  panels: number
+  observed_hours: number
+  operators: number
+  outages: number
+  blocks: number
+  blocked_operators: number
+  outages_per_month: number
+  blocks_per_month: number
+  median_recovery_minutes: number | null
+}
+
+export interface RadarHosters {
+  window_days: number
+  min_panels: number
+  hosters: RadarHoster[]
+  /** Хостеры, которых пока видит слишком мало панелей. Без этого числа
+   *  пустая таблица читается как «данных нет», а не «сеть копится». */
+  pending: number
+  locked?: boolean
+}
+
+/** Сводка «что радар сейчас наблюдает» — агрегат с сервера сети. */
+export interface RadarSite {
+  host_asn: number
+  host_org?: string | null
+  transport: string
+  /** Онлайн площадки в последнем часе; null — вердикта ещё нет. */
+  online?: number | null
+  /** Норма, с которой сравнивается онлайн; null — не набралось истории. */
+  baseline?: number | null
+  /** Сколько панелей сети наблюдают этот же ASN. */
+  panels: number
+}
+
+export interface RadarOverview {
+  links: {
+    total: number
+    /** Норма посчитана — маршрут под настоящим наблюдением. */
+    measured: number
+    /** Нормы хватает, чтобы детектор мог сработать. */
+    armed: number
+  }
+  operators: number
+  hosters: number
+  sites: RadarSite[]
+  network: { panels: number; hosters: number; operators: number }
+  /** Пульс сети: чужой опыт по площадкам, которых у вас может и не быть. */
+  pulse: {
+    days: number
+    incidents: number
+    hosters: number
+    blocks: number
+    outages: number
+    hosters_top: RadarProblemHoster[]
+  }
+}
+
+export interface RadarProblemHoster {
+  host_asn: number
+  host_org?: string | null
+  incidents: number
+  blocks: number
+  outages: number
+  last_at?: string | null
+  /** Площадка самого владельца — повод присмотреться, а не «не переезжать». */
+  is_mine: boolean
+}

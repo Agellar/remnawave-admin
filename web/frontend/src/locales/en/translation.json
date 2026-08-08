@@ -1263,7 +1263,10 @@
       "cores": "Cores",
       "network": "Network",
       "disk": "Disk",
-      "lastSeen": "Last seen {{ago}}"
+      "lastSeen": "Last seen {{ago}}",
+      "underAttack": "Under attack",
+      "underAttackHint": "Inbound traffic is far above this node's usual level and does not look legitimate",
+      "packetsHint": "Packets per second on the node's interface — including those that never reach Xray"
     },
     "sort": {
       "label": "Sort",
@@ -4009,6 +4012,8 @@
       "queue": "Queue",
       "inbox": "Inbox",
       "compose": "Compose",
+      "suppression": "Blocklist",
+      "dmarc": "DMARC",
       "credentials": "Credentials"
     },
     "addDomain": "Add Domain",
@@ -4074,6 +4079,55 @@
     "domainLimitInherit": "inherits the global limit",
     "domainLimitHint": "0 = inherit the global limit from settings",
     "limitUpdated": "Domain limit updated",
+    "searchPlaceholder": "Search messages…",
+    "filters": {
+      "all": "All",
+      "unread": "Unread",
+      "spam": "Suspicious",
+      "attachments": "With attachments"
+    },
+    "auth": {
+      "verified": "verified",
+      "suspicious": "suspicious",
+      "failedHint": "The message failed authentication checks — the sender may be forged"
+    },
+    "attachments": "Attachments",
+    "reply": "Reply",
+    "replyTo": "Reply to {{address}}",
+    "replyPlaceholder": "Your reply…",
+    "replyQuoted": "The original message will be quoted",
+    "replySent": "Reply queued for delivery",
+    "suppression": {
+      "add": "Add",
+      "added": "Address added to the blocklist",
+      "addPlaceholder": "address@example.com",
+      "removed": "Address removed from the blocklist",
+      "searchPlaceholder": "Search by address…",
+      "empty": "The blocklist is empty",
+      "emptyHint": "Addresses land here after hard delivery failures and unsubscribes — adding them by hand is rarely needed",
+      "removeTitle": "Remove from blocklist",
+      "removeConfirm": "Mail to this address will be sent again. Continue?",
+      "expiresAt": "expires {{date}}",
+      "reasons": {
+        "hard_bounce": "address does not exist",
+        "soft_bounce": "temporary failure",
+        "unsubscribe": "unsubscribed",
+        "complaint": "complaint",
+        "manual": "manual"
+      }
+    },
+    "dmarc": {
+      "empty": "No reports yet",
+      "emptyHint": "Mail providers send them daily to the address in your _dmarc DNS record — the first one arrives within a day of setup",
+      "period": "last {{days}} days",
+      "reports": "Reports",
+      "messages": "Messages",
+      "passed": "Passed",
+      "failed": "Failed",
+      "failingSources": "Unsigned senders",
+      "failingSourcesHint": "Mail sent as your domains that passed neither SPF nor DKIM. This is where you see both outside spoofing and your own service that forgot to sign",
+      "reportList": "Received reports"
+    },
     "credentials": {
       "title": "SMTP Credentials",
       "subtitle": "Manage logins for sending emails via SMTP Submission (port 587)",
@@ -5502,16 +5556,19 @@
     "purchase": {
       "title_sub": "Subscription: {{name}}",
       "title_topup": "Quota pack: {{name}}",
-      "subtitle_sub": "Pick a duration — the order is paid with a USDT transfer (TON network).",
+      "subtitle_sub": "Pick a duration — the order is paid with a USDT transfer.",
       "subtitle_topup": "A pack of {{n}} AI calls. Never expires — spent after the base quota.",
-      "subtitle_pay": "Transfer the exact amount with the comment (memo) — it matches the payment to the order.",
+      "subtitle_pay": "Transfer the exact amount to the address of the chosen network — the order applies once confirmed.",
       "months": "Duration, months",
       "total": "Total",
       "create": "Proceed to payment",
+      "network": "Network",
       "address": "Address (USDT on TON)",
+      "address_in": "Address (USDT · {{network}})",
       "amount": "Amount",
       "memo": "Comment (memo)",
       "memo_warning": "Always include the transfer comment — without it the payment cannot be matched to the order.",
+      "memo_unsupported": "This network does not carry a transfer comment. Send exactly the amount shown — the order is matched by amount and transfer time. Keep the order code in case you need to reach the panel developer.",
       "expires": "Order valid until",
       "i_paid": "I have paid",
       "polling": "Waiting for payment confirmation…",
@@ -5519,7 +5576,7 @@
       "paid_title": "Payment confirmed",
       "paid_body": "The subscription is applied without a restart. If the plugin code is not installed yet, hit \"Install\" on the card.",
       "expired_title": "Order expired",
-      "expired_body": "Create a new order. If you have already sent the payment, contact support."
+      "expired_body": "Create a new order. If you have already sent the payment, reach out to the panel developer."
     },
     "redeem_ok": "Code applied",
     "redeem_dialog": {
@@ -5574,6 +5631,7 @@
     },
     "server_errors": {
       "server_unreachable": "The licensing server is unreachable — try again later",
+      "panel_update_required": "This plugin needs a newer panel — update the panel first, then install the plugin",
       "not_registered": "Instance is not registered — reload the store page",
       "subscription_required": "An active subscription is required",
       "quota_exceeded": "AI call quota exhausted — buy a top-up pack",
@@ -5589,7 +5647,7 @@
       "unknown_tariff": "Unknown tariff — refresh the catalog",
       "unknown_topup": "Unknown pack — refresh the catalog",
       "wheel_not_found": "Wheel not found on the server",
-      "wheel_missing_on_server": "The wheel file is missing on the server — contact support",
+      "wheel_missing_on_server": "The wheel file is missing on the server — reach out to the panel developer",
       "wheel_sha_mismatch": "Wheel checksum mismatch — installation aborted",
       "invalid_wheel": "The file does not look like a valid wheel",
       "pip_install_failed": "pip failed to install the package — check backend logs"
@@ -5616,6 +5674,7 @@
       "settings_link": "Settings",
       "open_title": "Active incidents",
       "all_quiet": "The radar is quiet — no blocks detected on your links.",
+      "all_operators": "all operators",
       "expiry_trial": "Trial",
       "expiry_sub": "Subscription",
       "expiry_days": "{{what}} ends in {{days}} days",
@@ -5629,6 +5688,16 @@
       "dip_alive": "Node is connected — looks like a network issue or a blocked address.",
       "dip_offline": "Node is offline — check the node itself first.",
       "history_title": "History",
+      "hosters_title": "Hoster rating",
+      "hosters_pending": "Not enough data yet: a hoster enters the rating once at least {{panels}} panels watch it. Data is still building up for {{count}} hosters.",
+      "hosters_note": "Over {{days}} days. Only hosters watched by at least {{panels}} panels are listed — with fewer, a single outage skews everything.",
+      "hoster_mine": "yours",
+      "col_hoster": "Hoster",
+      "col_panels": "Panels",
+      "col_outages": "Outages",
+      "col_blocks": "Blocks",
+      "col_recovery": "Recovery",
+      "minutes": "{{count}} min",
       "col_link": "Link",
       "col_kind": "Kind",
       "col_since": "Started",
@@ -5689,7 +5758,28 @@
             "help": "A disconnected node is usually reported by the panel itself, so the radar stays quiet during planned reboots. The drop is still recorded."
           }
         }
-      }
+      },
+      "stat_links": "Routes watched",
+      "stat_links_hint": "a path «subscriber network → your site → protocol»; the radar learns a baseline for each",
+      "stat_armed": "{{count}} with enough users",
+      "stat_operators": "Subscriber networks",
+      "stat_operators_hint": "operators your users connect from",
+      "stat_sites": "Your sites",
+      "stat_sites_hint": "hosters where your nodes run",
+      "stat_network": "Panels in the network",
+      "stat_network_hint": "sharing observations; {{hosters}} hosters watched in total",
+      "sites_title": "Sites under watch",
+      "col_transport": "Protocol",
+      "col_online": "Online",
+      "col_norm": "Baseline",
+      "col_watchers": "Watchers",
+      "norm_pending": "collecting",
+      "only_you": "only you",
+      "pulse_title": "What the network sees in {{days}} days",
+      "pulse_calm": "The panel network has recorded no blocks in this period.",
+      "pulse_summary": "Blocks: {{blocks}}, hoster outages: {{outages}}. Sites affected: {{hosters}}.",
+      "pulse_note": "Data from the whole panel network — including sites you don't run. Handy when picking a new hoster.",
+      "col_last": "Last seen"
     },
     "smart_support": {
       "nav": "Smart Support",
