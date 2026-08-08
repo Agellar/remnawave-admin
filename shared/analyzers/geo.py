@@ -314,6 +314,7 @@ class GeoAnalyzer:
         connections: List[ActiveConnection],
         connection_history: List[Dict[str, Any]],
         ip_metadata_cache: Optional[Dict[str, 'IPMetadata']] = None,
+        user_device_count: int = 1,
     ) -> GeoScore:
         """
         Анализирует географическое распределение IP.
@@ -334,6 +335,14 @@ class GeoAnalyzer:
         impossible_travel = False
         # Configurable city distance threshold
         min_city_distance = config_service.get("violations_geo_max_city_distance_km", self.MIN_DISTANCE_FOR_DIFFERENT_CITIES_DEFAULT)
+        configured_country_limit = int(
+            config_service.get("violations_geo_max_simultaneous_countries", 0) or 0
+        )
+        allowed_active_countries = (
+            configured_country_limit
+            if configured_country_limit > 0
+            else max(1, int(user_device_count or 1))
+        )
 
         # Собираем уникальные IP из активных подключений и истории
         all_ips = set()
@@ -386,9 +395,13 @@ class GeoAnalyzer:
                 if country:
                     active_countries.add(country)
         
-        if len(active_countries) > 1:
+        if len(active_countries) > allowed_active_countries:
             score = 90.0
-            reasons.append(f"Одновременные подключения из разных стран: {', '.join(active_countries)}")
+            reasons.append(
+                "Одновременные подключения из слишком большого числа стран: "
+                f"{', '.join(sorted(active_countries))} "
+                f"(стран: {len(active_countries)}, допустимо: {allowed_active_countries})"
+            )
             impossible_travel = True
         
         # Анализ последовательных подключений

@@ -191,7 +191,12 @@ class IntelligentViolationDetector:
             temporal_score = self.temporal_analyzer.analyze(active_connections, connection_history, user_device_count, is_mobile=_has_mobile)
 
             # Анализируем геолокацию (используем общий кэш)
-            geo_score = await self.geo_analyzer.analyze(active_connections, connection_history, ip_metadata_cache)
+            geo_score = await self.geo_analyzer.analyze(
+                active_connections,
+                connection_history,
+                ip_metadata_cache,
+                user_device_count=user_device_count,
+            )
 
             # Debug-логирование гео-данных для диагностики проблем с городами
             logger.debug(

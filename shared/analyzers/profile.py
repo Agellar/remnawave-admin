@@ -300,13 +300,17 @@ class UserProfileAnalyzer:
                 score += 20.0
                 reasons.append(f"Новая страна (первый раз): {', '.join(new_countries)}")
 
-        # Проверяем подключение в нетипичное время
-        typical_hours = set(baseline.get('typical_hours', []))
-        if typical_hours and len(typical_hours) >= 3:  # Нужен минимум данных
-            current_hour = datetime.utcnow().hour
-            if current_hour not in typical_hours:
-                score += 10.0
-                reasons.append(f"Подключение в нетипичное время ({current_hour}:00 UTC, обычно: {sorted(typical_hours)[:6]})")
+        # Часовой профиль слишком нестабилен для пользователей с несколькими
+        # устройствами и поездками, поэтому этот слабый сигнал выключен по
+        # умолчанию и включается только отдельной настройкой.
+        from shared.config_service import config_service
+        if config_service.get("violations_profile_unusual_hour_enabled", False):
+            typical_hours = set(baseline.get('typical_hours', []))
+            if typical_hours and len(typical_hours) >= 3:  # Нужен минимум данных
+                current_hour = datetime.utcnow().hour
+                if current_hour not in typical_hours:
+                    score += 10.0
+                    reasons.append(f"Подключение в нетипичное время ({current_hour}:00 UTC, обычно: {sorted(typical_hours)[:6]})")
 
         # Если половина IP известны, снижаем скор (known_ratio уже вычислен выше)
         if current_ips and known_ips and known_ratio >= 0.5:

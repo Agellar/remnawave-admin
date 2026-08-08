@@ -95,6 +95,22 @@ async def test_geo_impossible_travel_creates_violation_on_first_hit():
     assert res.recommended_action.value in ("warn", "soft_block", "temp_block", "hard_block")
 
 
+@pytest.mark.asyncio
+async def test_geo_multiple_countries_within_device_limit_is_not_violation():
+    """Two devices may legitimately be active in two different countries."""
+    geo_map = {
+        "1.1.1.1": meta("1.1.1.1", country_code="RU", city="Moscow", latitude=55.7, longitude=37.6,
+                        asn=1, asn_org="ISP-A", connection_type="residential"),
+        "2.2.2.2": meta("2.2.2.2", country_code="UA", city="Kyiv", latitude=50.4, longitude=30.5,
+                        asn=2, asn_org="ISP-B", connection_type="residential"),
+    }
+    det = make_detector(geo_map, recent_violations=0)
+    res = await run_check(det, [conn("1.1.1.1", 60), conn("2.2.2.2", 60)], devices=2)
+    assert res.breakdown["geo"].score < 90.0
+    assert res.breakdown["geo"].impossible_travel_detected is False
+    assert not any("слишком большого числа стран" in reason for reason in res.reasons)
+
+
 # ── TEMPORAL ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -325,6 +341,25 @@ async def test_profile_ip_count_deviation():
     conns = [conn(f"{i}.{i}.{i}.{i}", 60) for i in range(1, 7)]  # 6 IP против baseline 1/день
     res = await run_check(det, conns, baseline=baseline)
     assert res.breakdown["profile"].score > 0.0
+
+
+@pytest.mark.asyncio
+async def test_profile_unusual_hour_is_disabled_by_default():
+    """An hour outside the baseline must not create a reason unless explicitly enabled."""
+    geo_map = {
+        "1.1.1.1": meta("1.1.1.1", country_code="RU", asn=1, asn_org="ISP",
+                        connection_type="residential"),
+    }
+    current_hour = datetime.utcnow().hour
+    baseline = {
+        "typical_countries": [], "typical_cities": [], "typical_regions": [], "typical_asns": [],
+        "known_ips": [], "avg_daily_unique_ips": 1.0, "max_daily_unique_ips": 1,
+        "typical_hours": [hour for hour in range(24) if hour != current_hour][:8],
+        "avg_session_duration_minutes": 0, "data_points": 10,
+    }
+    det = make_detector(geo_map, recent_violations=0)
+    res = await run_check(det, [conn("1.1.1.1", 60)], baseline=baseline)
+    assert not any("нетипичное время" in reason for reason in res.breakdown["profile"].reasons)
 
 
 # ── SANITY: чистый юзер ───────────────────────────────────────────
