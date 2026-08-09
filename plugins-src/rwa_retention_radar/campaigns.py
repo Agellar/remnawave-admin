@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import secrets
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import ai, bedolaga, data, store
+from rwa_incident_hub import active_node_uuids
 
 # Ключ оффера в Bedolaga. Свой на каждый сегмент: повторная кампания по
 # тому же сегменту обновит неиспользованную скидку, а не выдаст вторую.
@@ -94,8 +97,24 @@ def _in_bedolaga_window(user: Dict[str, Any], th: Dict[str, float]) -> bool:
     return False
 
 
+async def _incident_affected_users(db, safety: Dict[str, Any]) -> set[str]:
+    if not safety.get("suppress_active_incidents"):
+        return set()
+    nodes = await active_node_uuids(db)
+    if not nodes:
+        return set()
+    rows = await db.fetch(
+        """SELECT DISTINCT user_uuid FROM user_connections
+            WHERE node_uuid=ANY($1::uuid[])
+              AND connected_at >= NOW()-make_interval(mins => $2)""",
+        sorted(nodes),
+        int(safety["incident_lookback_minutes"]),
+    )
+    return {str(row["user_uuid"]) for row in rows}
+
+
 async def recipients(
-    db, segment: str, th: Dict[str, float]
+    db, segment: str, th: Dict[str, float], safety: Optional[Dict[str, Any]] = None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """Кому реально можно писать — и почему остальные отсеялись.
 
@@ -107,7 +126,14 @@ async def recipients(
     limit = int(th["max_recipients_per_campaign"])
 
     recent = await store.recently_messaged(db, cooldown_days)
-    skipped = {"no_telegram": 0, "cooldown": 0, "over_limit": 0, "bedolaga_auto": 0}
+    affected = await _incident_affected_users(db, safety or {}) if safety else set()
+    skipped = {
+        "no_telegram": 0,
+        "cooldown": 0,
+        "over_limit": 0,
+        "bedolaga_auto": 0,
+        "active_incident": 0,
+    }
 
     allowed: List[Dict[str, Any]] = []
     for user in everyone:
@@ -120,6 +146,9 @@ async def recipients(
         if user["uuid"] in recent:
             skipped["cooldown"] += 1
             continue
+        if user["uuid"] in affected:
+            skipped["active_incident"] += 1
+            continue
         allowed.append(user)
 
     if len(allowed) > limit:
@@ -130,9 +159,10 @@ async def recipients(
 
 
 async def preview(
-    db, ctx, segment: str, th: Dict[str, float], custom_text: Optional[str] = None
+    db, ctx, segment: str, th: Dict[str, float], custom_text: Optional[str] = None,
+    safety: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    people, skipped = await recipients(db, segment, th)
+    people, skipped = await recipients(db, segment, th, safety)
     discount = int(th[f"discount_{segment}"])
     valid_hours = int(th["offer_valid_hours"])
 
@@ -170,6 +200,46 @@ async def preview(
     }
 
 
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def arm(
+    db,
+    *,
+    confirm_token: str,
+    admin_username: Optional[str],
+    ttl_minutes: int,
+) -> Dict[str, Any]:
+    raw_token = secrets.token_urlsafe(32)
+    idempotency_key = str(uuid.uuid4())
+    await store.issue_arm(
+        db,
+        token_hash=_token_hash(raw_token),
+        confirm_token=confirm_token,
+        idempotency_key=idempotency_key,
+        admin_username=admin_username,
+        ttl_minutes=ttl_minutes,
+    )
+    return {
+        "arm_token": raw_token,
+        "idempotency_key": idempotency_key,
+        "expires_in_seconds": int(ttl_minutes) * 60,
+    }
+
+
+def _existing_result(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "campaign_id": int(row["id"]),
+        "dry_run": bool(row["dry_run"]),
+        "recipients": int(row["recipients"]),
+        "offers_created": int(row["sent"] or 0),
+        "offer_errors": int(row["failed"] or 0),
+        "broadcast_id": row["broadcast_id"],
+        "status": row["status"],
+    }
+
+
 async def send(
     db,
     ctx,
@@ -181,8 +251,16 @@ async def send(
     admin_username: Optional[str],
     th: Dict[str, float],
     bedolaga_cfg: Dict[str, Any],
+    safety: Dict[str, Any],
+    arm_token: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
-    people, _ = await recipients(db, segment, th)
+    if not dry_run and idempotency_key:
+        existing = await store.campaign_by_idempotency(db, idempotency_key)
+        if existing:
+            return _existing_result(existing)
+
+    people, _ = await recipients(db, segment, th, safety)
     discount = int(th[f"discount_{segment}"])
     valid_hours = int(th["offer_valid_hours"])
     telegram_ids = [int(u["telegram_id"]) for u in people]
@@ -197,7 +275,23 @@ async def send(
     if not people:
         raise ValueError("empty_audience")
 
-    campaign_id = await store.open_campaign(
+    if not dry_run:
+        if not safety.get("live_campaigns_enabled"):
+            raise ValueError("live_campaigns_disabled")
+        if safety.get("require_server_arm"):
+            if not arm_token or not idempotency_key:
+                raise ValueError("campaign_not_armed")
+            consumed = await store.consume_arm(
+                db,
+                token_hash=_token_hash(arm_token),
+                confirm_token=token,
+                idempotency_key=idempotency_key,
+                admin_username=admin_username,
+            )
+            if not consumed:
+                raise ValueError("arm_invalid_or_expired")
+
+    campaign_id, created = await store.open_campaign(
         db,
         segment=segment,
         discount_percent=discount,
@@ -206,7 +300,12 @@ async def send(
         recipients=len(people),
         dry_run=dry_run,
         admin_username=admin_username,
+        idempotency_key=idempotency_key if not dry_run else None,
     )
+    if not created:
+        existing = await store.campaign_by_idempotency(db, idempotency_key)
+        if existing:
+            return _existing_result(existing)
 
     if dry_run:
         await store.close_campaign(

@@ -9,6 +9,8 @@ import client from '@/api/client'
 
 import type {
   CampaignPreview,
+  CampaignArm,
+  CampaignSafetySettings,
   CampaignRecord,
   CampaignResult,
   OverviewResponse,
@@ -84,8 +86,29 @@ export async function sendCampaign(payload: {
   message_text: string
   confirm_token: string
   dry_run: boolean
+  arm_token?: string
+  idempotency_key?: string
 }): Promise<CampaignResult> {
   const { data } = await client.post<CampaignResult>(`${BASE}/campaign/send`, payload)
+  return data
+}
+
+export async function armCampaign(confirmToken: string): Promise<CampaignArm> {
+  const { data } = await client.post<CampaignArm>(`${BASE}/campaign/arm`, {
+    confirm_token: confirmToken,
+  })
+  return data
+}
+
+export async function fetchCampaignSafety(): Promise<CampaignSafetySettings> {
+  const { data } = await client.get<CampaignSafetySettings>(`${BASE}/campaign-safety`)
+  return data
+}
+
+export async function saveCampaignSafety(
+  patch: Partial<CampaignSafetySettings>,
+): Promise<CampaignSafetySettings> {
+  const { data } = await client.put<CampaignSafetySettings>(`${BASE}/campaign-safety`, patch)
   return data
 }
 

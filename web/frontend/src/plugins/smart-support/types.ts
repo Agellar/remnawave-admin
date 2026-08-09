@@ -135,6 +135,20 @@ export interface ViolationCard {
   is_resolved: boolean
 }
 
+export interface IncidentCard {
+  id: number
+  source_plugin: string
+  kind: string
+  severity: string
+  title: string
+  details: Record<string, unknown>
+  node_uuid?: string | null
+  transport?: string | null
+  status: string
+  started_at: string
+  updated_at: string
+}
+
 export interface Hypothesis {
   rule_id: string
   title: string
@@ -171,9 +185,25 @@ export interface ReportResponse {
   nodes: NodeCard[]
   correlations: CorrelationCluster[]
   violations_recent: ViolationCard[]
+  incidents_active: IncidentCard[]
   hypotheses: Hypothesis[]
   ai_analysis?: AIAnalysis | null
   session_id?: number | null
+}
+
+export interface FeedbackIn {
+  session_id?: number | null
+  user_uuid: string
+  rule_id: string
+  verdict: 'correct' | 'partial' | 'wrong' | 'resolved'
+  comment?: string | null
+}
+
+export interface FeedbackOut {
+  id: number
+  rule_id: string
+  verdict: string
+  summary: Record<string, number>
 }
 
 /**

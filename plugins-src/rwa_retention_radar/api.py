@@ -14,10 +14,14 @@ from fastapi.responses import StreamingResponse
 from . import bedolaga, campaigns, data, settings as settings_mod, store
 from .schemas import (
     CampaignHistoryResponse,
+    CampaignArmIn,
+    CampaignArmOut,
     CampaignPreviewIn,
     CampaignPreviewOut,
     CampaignSendIn,
     CampaignSendOut,
+    CampaignSafetyPatch,
+    CampaignSafetySettings,
     OverviewResponse,
     SegmentCard,
     SegmentResponse,
@@ -156,9 +160,27 @@ def build_router(ctx) -> APIRouter:
     ) -> CampaignPreviewOut:
         _check_segment(body.segment)
         th = await settings_mod.get_thresholds(ctx.settings)
-        result = await campaigns.preview(db, ctx, body.segment, th, body.message_text)
+        safety = await settings_mod.get_safety(ctx.settings)
+        result = await campaigns.preview(
+            db, ctx, body.segment, th, body.message_text, safety=safety
+        )
         result["sample"] = [SegmentUser(**u) for u in result["sample"]]
         return CampaignPreviewOut(**result)
+
+    @router.post("/campaign/arm", response_model=CampaignArmOut)
+    async def campaign_arm(
+        body: CampaignArmIn, admin: Any = Depends(can_campaign)
+    ) -> CampaignArmOut:
+        safety = await settings_mod.get_safety(ctx.settings)
+        if not safety["live_campaigns_enabled"]:
+            raise HTTPException(status_code=409, detail="live_campaigns_disabled")
+        result = await campaigns.arm(
+            db,
+            confirm_token=body.confirm_token,
+            admin_username=getattr(admin, "username", None),
+            ttl_minutes=int(safety["arm_ttl_minutes"]),
+        )
+        return CampaignArmOut(**result)
 
     @router.post("/campaign/send", response_model=CampaignSendOut)
     async def campaign_send(
@@ -166,6 +188,7 @@ def build_router(ctx) -> APIRouter:
     ) -> CampaignSendOut:
         _check_segment(body.segment)
         th = await settings_mod.get_thresholds(ctx.settings)
+        safety = await settings_mod.get_safety(ctx.settings)
         cfg = settings_mod.get_bedolaga_config()
         if not body.dry_run and not cfg.get("token"):
             raise HTTPException(status_code=503, detail="bedolaga_not_configured")
@@ -181,6 +204,9 @@ def build_router(ctx) -> APIRouter:
                 admin_username=getattr(admin, "username", None),
                 th=th,
                 bedolaga_cfg=cfg,
+                safety=safety,
+                arm_token=body.arm_token,
+                idempotency_key=body.idempotency_key,
             )
         except ValueError as exc:
             # stale_confirmation / empty_audience — это не сбой сервера,
@@ -208,5 +234,20 @@ def build_router(ctx) -> APIRouter:
     ) -> ThresholdSettings:
         values = await settings_mod.patch_thresholds(ctx.settings, body.values)
         return ThresholdSettings(**values)
+
+    @router.get("/campaign-safety", response_model=CampaignSafetySettings)
+    async def get_campaign_safety(
+        _: Any = Depends(can_view),
+    ) -> CampaignSafetySettings:
+        return CampaignSafetySettings(**await settings_mod.get_safety(ctx.settings))
+
+    @router.put("/campaign-safety", response_model=CampaignSafetySettings)
+    async def put_campaign_safety(
+        body: CampaignSafetyPatch, _: Any = Depends(can_campaign)
+    ) -> CampaignSafetySettings:
+        values = await settings_mod.patch_safety(
+            ctx.settings, body.model_dump(exclude_none=True)
+        )
+        return CampaignSafetySettings(**values)
 
     return router

@@ -94,6 +94,8 @@ class SkipReasons(BaseModel):
     over_limit: int = 0
     # Сейчас в работе у автоматики Bedolaga — трогать нельзя.
     bedolaga_auto: int = 0
+    # Пользователь недавно работал через ноду с активным Incident Hub событием.
+    active_incident: int = 0
 
 
 class CampaignPreviewOut(BaseModel):
@@ -124,6 +126,19 @@ class CampaignSendIn(BaseModel):
     # По умолчанию именно пробный прогон: случайный POST не должен
     # заканчиваться рассылкой двум сотням человек.
     dry_run: bool = True
+    # Для реальной отправки сервер выдаёт одноразовую пару после arm-запроса.
+    arm_token: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+
+class CampaignArmIn(BaseModel):
+    confirm_token: str = Field(..., min_length=16, max_length=128)
+
+
+class CampaignArmOut(BaseModel):
+    arm_token: str
+    idempotency_key: str
+    expires_in_seconds: int
 
 
 class CampaignSendOut(BaseModel):
@@ -159,3 +174,19 @@ class CampaignHistoryResponse(BaseModel):
 
 class ThresholdPatch(BaseModel):
     values: Dict[str, float]
+
+
+class CampaignSafetySettings(BaseModel):
+    live_campaigns_enabled: bool = False
+    require_server_arm: bool = True
+    arm_ttl_minutes: int = 10
+    suppress_active_incidents: bool = True
+    incident_lookback_minutes: int = 60
+
+
+class CampaignSafetyPatch(BaseModel):
+    live_campaigns_enabled: Optional[bool] = None
+    require_server_arm: Optional[bool] = None
+    arm_ttl_minutes: Optional[int] = None
+    suppress_active_incidents: Optional[bool] = None
+    incident_lookback_minutes: Optional[int] = None

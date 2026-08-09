@@ -78,6 +78,21 @@ export interface SkipReasons {
   bedolaga_auto: number
   cooldown: number
   over_limit: number
+  active_incident: number
+}
+
+export interface CampaignArm {
+  arm_token: string
+  idempotency_key: string
+  expires_in_seconds: number
+}
+
+export interface CampaignSafetySettings {
+  live_campaigns_enabled: boolean
+  require_server_arm: boolean
+  arm_ttl_minutes: number
+  suppress_active_incidents: boolean
+  incident_lookback_minutes: number
 }
 
 export interface CampaignPreview {

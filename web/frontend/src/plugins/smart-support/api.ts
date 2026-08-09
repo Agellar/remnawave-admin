@@ -15,6 +15,8 @@ import type {
   ActionExecuteIn,
   ActionExecuteOut,
   ActionListResponse,
+  FeedbackIn,
+  FeedbackOut,
   ReportResponse,
   SearchResponse,
   SessionListResponse,
@@ -36,6 +38,11 @@ export async function searchUsers(q: string, limit = 20): Promise<SearchResponse
 
 export async function fetchReport(uuid: string): Promise<ReportResponse> {
   const { data } = await client.get<ReportResponse>(`${BASE}/report/${uuid}`)
+  return data
+}
+
+export async function submitFeedback(payload: FeedbackIn): Promise<FeedbackOut> {
+  const { data } = await client.post<FeedbackOut>(`${BASE}/feedback`, payload)
   return data
 }
 

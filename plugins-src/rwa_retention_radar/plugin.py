@@ -10,6 +10,7 @@ import time
 
 from web.backend.core.plugin_api import PluginContext
 from web.backend.core.plugins import NavEntry, PluginManifest, PluginParts, ScheduledTask
+from rwa_incident_hub import ensure_schema as ensure_incident_schema
 
 from . import __version__, data, store
 from .api import RBAC_RESOURCES, build_router
@@ -32,6 +33,7 @@ def _build(ctx: PluginContext) -> PluginParts:
         """
         if not state["schema_ready"]:
             await store.ensure_schema(ctx.db)
+            await ensure_incident_schema(ctx.db)
             state["schema_ready"] = True
             ctx.logger.info("retention_radar.schema_ready")
 

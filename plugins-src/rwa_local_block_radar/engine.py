@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from rwa_incident_hub import resolve as resolve_incident, upsert as upsert_incident
 
 from . import settings as settings_mod, store
 
@@ -114,9 +115,16 @@ async def run_tick(ctx, state: dict) -> None:
                 _is_recovered(sample, base, cfg) for sample in recent
             ):
                 await store.resolve_alert(ctx.db, int(opened["id"]))
+                await resolve_incident(
+                    ctx.db,
+                    source_plugin="block_radar",
+                    incident_key=f"node:{row['node_uuid']}",
+                )
                 resolved += 1
                 if cfg["notify_enabled"] and cfg["notify_resolved"]:
                     await _notify(ctx, row, base, resolved_event=True)
+            else:
+                await _publish_incident(ctx, row, base)
             continue
 
         if not cfg["dip_enabled"]:
@@ -128,6 +136,7 @@ async def run_tick(ctx, state: dict) -> None:
         if all(_is_dip(sample, base, cfg) for sample in recent):
             alert_id = await store.create_alert(ctx.db, row, base)
             if alert_id:
+                await _publish_incident(ctx, row, base)
                 created += 1
                 if cfg["notify_enabled"]:
                     await _notify(ctx, row, base, resolved_event=False)
@@ -147,6 +156,30 @@ async def run_tick(ctx, state: dict) -> None:
         "notified": 0 if not cfg["notify_enabled"] else created + resolved,
         "measured": measured,
     }
+
+
+async def _publish_incident(ctx, row: dict, base: dict) -> None:
+    """Expose a privacy-safe infrastructure incident to sibling plugins."""
+    online = int(row["online"] or 0)
+    baseline_online = float(base["online"] or 0)
+    drop_percent = round(max(0.0, 1.0 - online / baseline_online) * 100) if baseline_online else 0
+    await upsert_incident(
+        ctx.db,
+        source_plugin="block_radar",
+        incident_key=f"node:{row['node_uuid']}",
+        kind="node_transport_dip",
+        severity="high" if drop_percent >= 70 else "medium",
+        title=f"Просадка {row['node_name']} · {row['transport']}",
+        details={
+            "node_name": row["node_name"],
+            "provider_name": row["provider_name"],
+            "online": online,
+            "baseline_online": round(baseline_online, 1),
+            "drop_percent": drop_percent,
+        },
+        node_uuid=row["node_uuid"],
+        transport=row["transport"],
+    )
 
 
 async def _notify(ctx, row: dict, base: dict, *, resolved_event: bool) -> None:

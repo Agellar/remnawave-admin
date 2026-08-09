@@ -17,9 +17,9 @@ import { toast } from 'sonner'
 import { AlertTriangle, ArrowLeft, Loader2, Send, Sparkles } from '@/components/brand/icons'
 
 import LicenseBanner from '@/components/plugins/license'
-import { asLicenseError, previewCampaign, sendCampaign } from './api'
+import { armCampaign, asLicenseError, previewCampaign, sendCampaign } from './api'
 import { Skeleton } from './primitives'
-import { SEGMENT_KEYS, type CampaignPreview, type SegmentKey } from './types'
+import { SEGMENT_KEYS, type CampaignArm, type CampaignPreview, type SegmentKey } from './types'
 
 export default function CampaignPage() {
   const { t } = useTranslation()
@@ -27,7 +27,7 @@ export default function CampaignPage() {
   const segmentKey = SEGMENT_KEYS.includes(key as SegmentKey) ? (key as SegmentKey) : null
 
   const [text, setText] = useState('')
-  const [armed, setArmed] = useState(false)
+  const [armed, setArmed] = useState<CampaignArm | null>(null)
   const [result, setResult] = useState<string | null>(null)
 
   const { data, isLoading, error, refetch, isFetching } = useQuery<CampaignPreview>({
@@ -46,8 +46,33 @@ export default function CampaignPage() {
   // получатель. Взводить «отправить по-настоящему» приходится заново.
   const dirty = data ? text.trim() !== data.message_text.trim() : false
   useEffect(() => {
-    if (dirty) setArmed(false)
+    if (dirty) setArmed(null)
   }, [dirty])
+
+  const armMutation = useMutation({
+    mutationFn: () => armCampaign(data?.confirm_token ?? ''),
+    onSuccess: (value) => {
+      setArmed(value)
+      toast.warning(
+        t('plugins.retention_radar.campaign.armed_server', {
+          minutes: Math.round(value.expires_in_seconds / 60),
+          defaultValue: `Сервер разрешил одну отправку на ${Math.round(value.expires_in_seconds / 60)} мин.`,
+        }),
+      )
+    },
+    onError: (err: unknown) => {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      toast.error(
+        detail === 'live_campaigns_disabled'
+          ? t('plugins.retention_radar.campaign.live_disabled', {
+              defaultValue: 'Реальные кампании выключены в настройках безопасности.',
+            })
+          : t('plugins.retention_radar.campaign.arm_failed', {
+              defaultValue: 'Не удалось получить серверное разрешение.',
+            }),
+      )
+    },
+  })
 
   const mutation = useMutation({
     mutationFn: (dryRun: boolean) =>
@@ -56,9 +81,11 @@ export default function CampaignPage() {
         message_text: text.trim(),
         confirm_token: data?.confirm_token ?? '',
         dry_run: dryRun,
+        arm_token: dryRun ? undefined : armed?.arm_token,
+        idempotency_key: dryRun ? undefined : armed?.idempotency_key,
       }),
     onSuccess: (res) => {
-      setArmed(false)
+      setArmed(null)
       if (res.dry_run) {
         setResult(t('plugins.retention_radar.campaign.dry_run_done', { n: res.recipients }))
         toast.success(t('plugins.retention_radar.campaign.dry_run_done', { n: res.recipients }))
@@ -90,7 +117,8 @@ export default function CampaignPage() {
   if (isLoading || !data) return <Skeleton className="h-96 w-full" />
 
   const skipped = data.skipped
-  const skippedTotal = skipped.no_telegram + skipped.cooldown + skipped.over_limit
+  const skippedTotal =
+    skipped.no_telegram + skipped.cooldown + skipped.over_limit + skipped.active_incident
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -132,6 +160,14 @@ export default function CampaignPage() {
           )}
           {skipped.cooldown > 0 && (
             <p>{t('plugins.retention_radar.campaign.skip_cooldown', { n: skipped.cooldown })}</p>
+          )}
+          {skipped.active_incident > 0 && (
+            <p>
+              {t('plugins.retention_radar.campaign.skip_incident', {
+                n: skipped.active_incident,
+                defaultValue: `Активный инфраструктурный инцидент: ${skipped.active_incident}`,
+              })}
+            </p>
           )}
           {skipped.over_limit > 0 && (
             <p>{t('plugins.retention_radar.campaign.skip_limit', { n: skipped.over_limit })}</p>
@@ -226,12 +262,18 @@ export default function CampaignPage() {
         {!armed ? (
           <button
             type="button"
-            onClick={() => setArmed(true)}
-            disabled={dirty || !text.trim() || data.recipients === 0}
+            onClick={() => armMutation.mutate()}
+            disabled={
+              dirty || !text.trim() || data.recipients === 0 || armMutation.isPending
+            }
             className="inline-flex items-center gap-2 rounded border border-amber-500/40 px-4 py-2 text-sm text-amber-300 hover:bg-amber-500/10 disabled:opacity-40"
           >
             <Send className="w-4 h-4" aria-hidden />
-            {t('plugins.retention_radar.campaign.arm')}
+            {armMutation.isPending
+              ? t('plugins.retention_radar.campaign.arming', {
+                  defaultValue: 'Получаю разрешение…',
+                })
+              : t('plugins.retention_radar.campaign.arm')}
           </button>
         ) : (
           <button

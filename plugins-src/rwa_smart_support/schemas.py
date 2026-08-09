@@ -136,6 +136,20 @@ class ViolationCard(BaseModel):
     is_resolved: bool = False
 
 
+class IncidentCard(BaseModel):
+    id: int
+    source_plugin: str
+    kind: str
+    severity: str
+    title: str
+    details: Dict[str, Any] = Field(default_factory=dict)
+    node_uuid: Optional[str] = None
+    transport: Optional[str] = None
+    status: str
+    started_at: datetime
+    updated_at: datetime
+
+
 class Hypothesis(BaseModel):
     rule_id: str
     title: str
@@ -163,9 +177,25 @@ class ReportResponse(BaseModel):
     nodes: List[NodeCard] = Field(default_factory=list)
     correlations: List[CorrelationCluster] = Field(default_factory=list)
     violations_recent: List[ViolationCard] = Field(default_factory=list)
+    incidents_active: List[IncidentCard] = Field(default_factory=list)
     hypotheses: List[Hypothesis] = Field(default_factory=list)
     ai_analysis: Optional[AIAnalysis] = None
     session_id: Optional[int] = None
+
+
+class FeedbackIn(BaseModel):
+    session_id: Optional[int] = None
+    user_uuid: str
+    rule_id: str = Field(..., min_length=1, max_length=128)
+    verdict: Literal["correct", "partial", "wrong", "resolved"]
+    comment: Optional[str] = Field(default=None, max_length=500)
+
+
+class FeedbackOut(BaseModel):
+    id: int
+    rule_id: str
+    verdict: str
+    summary: Dict[str, int] = Field(default_factory=dict)
 
 
 # ── настройки ────────────────────────────────────────────────────

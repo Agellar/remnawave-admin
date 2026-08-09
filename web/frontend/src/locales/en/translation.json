@@ -5818,7 +5818,8 @@
           "hypotheses": "Most likely causes",
           "ai_analysis": "AI analysis",
           "actions": "Quick actions",
-          "sessions": "Action history"
+          "sessions": "Action history",
+          "incidents": "Active infrastructure incidents"
         },
         "sessions_empty": "No actions on this user yet.",
         "sessions_unknown_admin": "(system)",
@@ -5871,7 +5872,15 @@
           "title": "Draft reply to the customer",
           "copy": "Copy",
           "hint": "Model-generated. Read it before sending — the wording is on you, not on the model."
-        }
+        },
+        "incident_hint": "This is likely a shared service issue rather than a user device problem."
+      },
+      "feedback": {
+        "correct": "Correct",
+        "partial": "Partial",
+        "wrong": "Wrong",
+        "saved": "Feedback saved",
+        "failed": "Could not save feedback"
       },
       "audit": {
         "title": "Audit log",
@@ -5945,6 +5954,10 @@
         "device_power_saving": {
           "title": "Device firmware kills the VPN in background",
           "detail": "Xiaomi, Huawei, Samsung and similar shells close background apps to save battery — the tunnel drops on its own."
+        },
+        "active_infrastructure_incident": {
+          "title": "Active infrastructure incident",
+          "detail": "Node monitoring confirmed a shared issue; check service status first."
         }
       },
       "settings": {
@@ -6098,6 +6111,13 @@
         "save": "Save",
         "saved": "Thresholds saved.",
         "save_failed": "Could not save.",
+        "safety_title": "Campaign safety",
+        "safety_hint": "Preview and dry-run are always available; a live send requires a one-time server arm.",
+        "safety_saved": "Campaign safety settings saved.",
+        "live_campaigns": "Allow live campaigns",
+        "suppress_incidents": "Exclude users affected by active incidents",
+        "arm_ttl": "Server arm lifetime, minutes",
+        "save_safety": "Save safety settings",
         "fields": {
           "silent_days": "Silence = churn, days",
           "silent_deep_days": "Deep silence, days",
@@ -6146,12 +6166,17 @@
         "skip_no_telegram": "{{n}} — no Telegram ID, nowhere to write",
         "skip_cooldown": "{{n}} — messaged recently",
         "skip_limit": "{{n}} — over the per-campaign limit",
+        "skip_incident": "{{n}} — recently used a node with an active incident",
         "text_title": "Message text",
         "regenerate": "Regenerate",
         "ai_failed": "The model did not answer ({{reason}}) — write the text yourself.",
         "text_hint": "{{n}} characters. Sent as is, without greeting or signature.",
         "dry_run": "Dry run",
         "arm": "Send for real",
+        "arming": "Requesting permission…",
+        "armed_server": "Server allowed one send for {{minutes}} min.",
+        "live_disabled": "Live campaigns are disabled in safety settings.",
+        "arm_failed": "Could not obtain server permission.",
         "confirm": "Yes, send to {{n}} people",
         "dirty": "Text changed — run a new dry run.",
         "dry_run_done": "Dry run: {{n}} recipients would be reached, nothing was sent.",

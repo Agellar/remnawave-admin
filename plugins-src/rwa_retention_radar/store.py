@@ -44,6 +44,24 @@ CREATE TABLE IF NOT EXISTS retention_radar_campaigns (
 CREATE INDEX IF NOT EXISTS retention_radar_campaigns_recent_idx
     ON retention_radar_campaigns (created_at DESC);
 
+ALTER TABLE retention_radar_campaigns
+    ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS retention_radar_campaigns_idempotency_idx
+    ON retention_radar_campaigns (idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS retention_radar_campaign_arms (
+    token_hash      TEXT PRIMARY KEY,
+    confirm_token   TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    admin_username  TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    used_at         TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS retention_radar_campaign_arms_expires_idx
+    ON retention_radar_campaign_arms (expires_at);
+
 -- Кому и когда уже писали. Нужна не для отчётности, а чтобы человек не
 -- получил три «персональных предложения» за неделю: перед каждой
 -- кампанией список сверяется с этой таблицей.
@@ -133,14 +151,17 @@ async def open_campaign(
     recipients: int,
     dry_run: bool,
     admin_username: str | None,
-) -> int:
+    idempotency_key: str | None = None,
+) -> tuple[int, bool]:
     """Запись создаётся ДО отправки: если процесс упадёт на середине,
     в истории останется след, а не тишина."""
-    return await db.fetchval(
+    campaign_id = await db.fetchval(
         """INSERT INTO retention_radar_campaigns
                (segment, discount_percent, valid_hours, message_text,
-                recipients, dry_run, admin_username)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+                recipients, dry_run, admin_username, idempotency_key)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+           DO NOTHING
            RETURNING id""",
         segment,
         int(discount_percent),
@@ -149,7 +170,74 @@ async def open_campaign(
         int(recipients),
         bool(dry_run),
         admin_username,
+        idempotency_key,
     )
+    if campaign_id:
+        return int(campaign_id), True
+    existing = await db.fetchval(
+        "SELECT id FROM retention_radar_campaigns WHERE idempotency_key=$1",
+        idempotency_key,
+    )
+    return int(existing), False
+
+
+async def campaign_by_idempotency(db, key: str | None):
+    if not key:
+        return None
+    row = await db.fetchrow(
+        """SELECT id, recipients, sent, failed, dry_run, status, broadcast_id
+             FROM retention_radar_campaigns WHERE idempotency_key=$1""",
+        key,
+    )
+    return dict(row) if row else None
+
+
+async def issue_arm(
+    db,
+    *,
+    token_hash: str,
+    confirm_token: str,
+    idempotency_key: str,
+    admin_username: str | None,
+    ttl_minutes: int,
+) -> None:
+    await db.execute(
+        """DELETE FROM retention_radar_campaign_arms
+            WHERE expires_at < NOW() - INTERVAL '1 day'"""
+    )
+    await db.execute(
+        """INSERT INTO retention_radar_campaign_arms
+                  (token_hash, confirm_token, idempotency_key, admin_username, expires_at)
+            VALUES ($1,$2,$3,$4,NOW()+make_interval(mins => $5))""",
+        token_hash,
+        confirm_token,
+        idempotency_key,
+        admin_username,
+        int(ttl_minutes),
+    )
+
+
+async def consume_arm(
+    db,
+    *,
+    token_hash: str,
+    confirm_token: str,
+    idempotency_key: str,
+    admin_username: str | None,
+) -> bool:
+    arm_id = await db.fetchval(
+        """UPDATE retention_radar_campaign_arms
+              SET used_at=NOW()
+            WHERE token_hash=$1 AND confirm_token=$2 AND idempotency_key=$3
+              AND admin_username IS NOT DISTINCT FROM $4
+              AND used_at IS NULL AND expires_at > NOW()
+            RETURNING token_hash""",
+        token_hash,
+        confirm_token,
+        idempotency_key,
+        admin_username,
+    )
+    return bool(arm_id)
 
 
 async def close_campaign(

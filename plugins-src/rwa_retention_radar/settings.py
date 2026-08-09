@@ -11,6 +11,17 @@ import os
 from typing import Dict
 
 KEY_THRESHOLDS = "thresholds"
+KEY_SAFETY = "campaign_safety"
+
+DEFAULT_SAFETY = {
+    # Реальная рассылка должна быть явно разрешена оператором. Preview и
+    # dry-run доступны всегда.
+    "live_campaigns_enabled": False,
+    "require_server_arm": True,
+    "arm_ttl_minutes": 10,
+    "suppress_active_incidents": True,
+    "incident_lookback_minutes": 60,
+}
 
 # Имена совпадают с i18n-ключами панели
 # (plugins.retention_radar.settings.fields.*) — переименовывать нельзя.
@@ -98,6 +109,40 @@ async def patch_thresholds(settings, patch: Dict[str, float]) -> Dict[str, float
             stored[key] = max(1.0, float(value))
     await settings.set(KEY_THRESHOLDS, stored)
     return await get_thresholds(settings)
+
+
+async def get_safety(settings) -> Dict[str, object]:
+    stored = await settings.get(KEY_SAFETY, {}) or {}
+    values = dict(DEFAULT_SAFETY)
+    if isinstance(stored, dict):
+        values.update({key: stored[key] for key in values if key in stored})
+    return {
+        "live_campaigns_enabled": bool(values["live_campaigns_enabled"]),
+        "require_server_arm": bool(values["require_server_arm"]),
+        "arm_ttl_minutes": max(2, min(30, int(values["arm_ttl_minutes"]))),
+        "suppress_active_incidents": bool(values["suppress_active_incidents"]),
+        "incident_lookback_minutes": max(
+            5, min(24 * 60, int(values["incident_lookback_minutes"]))
+        ),
+    }
+
+
+async def patch_safety(settings, patch: Dict[str, object]) -> Dict[str, object]:
+    current = await get_safety(settings)
+    for key in DEFAULT_SAFETY:
+        if key in patch:
+            current[key] = patch[key]
+    resolved = {
+        "live_campaigns_enabled": bool(current["live_campaigns_enabled"]),
+        "require_server_arm": bool(current["require_server_arm"]),
+        "arm_ttl_minutes": max(2, min(30, int(current["arm_ttl_minutes"]))),
+        "suppress_active_incidents": bool(current["suppress_active_incidents"]),
+        "incident_lookback_minutes": max(
+            5, min(24 * 60, int(current["incident_lookback_minutes"]))
+        ),
+    }
+    await settings.set(KEY_SAFETY, resolved)
+    return resolved
 
 
 def get_bedolaga_config() -> Dict[str, str | None]:

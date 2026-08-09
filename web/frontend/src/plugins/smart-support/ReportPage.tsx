@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import {
   AlertCircle,
   ArrowLeft,
@@ -29,7 +30,7 @@ import {
   useActionByIdFinder,
   useActionsCatalog,
 } from './actions'
-import { asLicenseError, fetchReport, fetchSessionsForUser } from './api'
+import { asLicenseError, fetchReport, fetchSessionsForUser, submitFeedback } from './api'
 import {
   CopyButton,
   CopyChip,
@@ -92,6 +93,7 @@ export default function ReportPage() {
       <ReportHeader report={data} />
       <div className="grid gap-6 lg:grid-cols-2">
         <HypothesesCard report={data} />
+        <IncidentsCard report={data} />
         <AIAnalysisCard report={data} />
         <QuickActionsCard userUuid={data.user.uuid} />
         <UserCard report={data} />
@@ -238,11 +240,21 @@ function HypothesesCard({ report }: { report: ReportResponse }) {
       </div>
       <ul className="space-y-2">
         {top.map((h) => (
-          <HypothesisRow key={h.rule_id} h={h} userUuid={report.user.uuid} />
+          <HypothesisRow
+            key={h.rule_id}
+            h={h}
+            userUuid={report.user.uuid}
+            sessionId={report.session_id}
+          />
         ))}
         {expanded &&
           rest.map((h) => (
-            <HypothesisRow key={h.rule_id} h={h} userUuid={report.user.uuid} />
+            <HypothesisRow
+              key={h.rule_id}
+              h={h}
+              userUuid={report.user.uuid}
+              sessionId={report.session_id}
+            />
           ))}
       </ul>
       {rest.length > 0 && (
@@ -326,6 +338,7 @@ function AIAnalysisCard({ report }: { report: ReportResponse }) {
             <HypothesisRow
               key={h.rule_id}
               userUuid={report.user.uuid}
+              sessionId={report.session_id}
               h={{
                 rule_id: h.rule_id,
                 title: h.title,
@@ -343,8 +356,32 @@ function AIAnalysisCard({ report }: { report: ReportResponse }) {
 }
 
 
-function HypothesisRow({ h, userUuid }: { h: Hypothesis; userUuid: string }) {
+function HypothesisRow({
+  h,
+  userUuid,
+  sessionId,
+}: {
+  h: Hypothesis
+  userUuid: string
+  sessionId?: number | null
+}) {
   const { t } = useTranslation()
+  const [verdict, setVerdict] = useState<string | null>(null)
+  const feedback = useMutation({
+    mutationFn: (next: 'correct' | 'partial' | 'wrong' | 'resolved') =>
+      submitFeedback({
+        session_id: sessionId,
+        user_uuid: userUuid,
+        rule_id: h.rule_id,
+        verdict: next,
+      }),
+    onSuccess: (result) => {
+      setVerdict(result.verdict)
+      toast.success(t('plugins.smart_support.feedback.saved', { defaultValue: 'Оценка сохранена' }))
+    },
+    onError: () =>
+      toast.error(t('plugins.smart_support.feedback.failed', { defaultValue: 'Не удалось сохранить оценку' })),
+  })
   const palette = severityPalette(h.severity)
   // Prefer the localised title/detail if the rule has a translation key,
   // otherwise fall back to whatever the backend provided. This lets us
@@ -387,9 +424,65 @@ function HypothesisRow({ h, userUuid }: { h: Hypothesis; userUuid: string }) {
           {meta && (
             <ActionLauncher meta={meta} userUuid={userUuid} ruleId={h.rule_id} size="sm" />
           )}
+          <span className="ml-auto inline-flex items-center gap-1" aria-label="feedback">
+            {(['correct', 'partial', 'wrong'] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                disabled={feedback.isPending}
+                onClick={() => feedback.mutate(value)}
+                className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
+                  verdict === value
+                    ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-300'
+                    : 'border-[var(--glass-border)] text-dark-400 hover:text-white'
+                }`}
+              >
+                {value === 'correct'
+                  ? t('plugins.smart_support.feedback.correct', { defaultValue: 'Верно' })
+                  : value === 'partial'
+                    ? t('plugins.smart_support.feedback.partial', { defaultValue: 'Частично' })
+                    : t('plugins.smart_support.feedback.wrong', { defaultValue: 'Неверно' })}
+              </button>
+            ))}
+          </span>
         </div>
       </div>
     </li>
+  )
+}
+
+
+function IncidentsCard({ report }: { report: ReportResponse }) {
+  const { t } = useTranslation()
+  if (!report.incidents_active?.length) return null
+  return (
+    <div className="glass-card p-5 lg:col-span-2 border border-amber-500/30">
+      <div className="flex items-center gap-2 mb-3">
+        <ShieldAlert className="w-4 h-4 text-amber-400" />
+        <h2 className="text-sm font-semibold text-white uppercase tracking-wider">
+          {t('plugins.smart_support.report.sections.incidents', {
+            defaultValue: 'Активные инфраструктурные инциденты',
+          })}
+        </h2>
+      </div>
+      <ul className="space-y-2">
+        {report.incidents_active.map((incident) => (
+          <li key={incident.id} className="rounded bg-amber-500/[0.06] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-medium text-amber-200">{incident.title}</span>
+              <span className="text-[10px] uppercase text-amber-300">
+                {incident.transport || incident.kind}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-dark-300">
+              {t('plugins.smart_support.report.incident_hint', {
+                defaultValue: 'Вероятна общая проблема сервиса, а не устройства пользователя.',
+              })}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 

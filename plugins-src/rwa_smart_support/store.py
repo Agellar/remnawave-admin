@@ -48,6 +48,23 @@ CREATE TABLE IF NOT EXISTS smart_support_ai_usage (
     period TEXT PRIMARY KEY,
     used   INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS smart_support_feedback (
+    id               BIGSERIAL PRIMARY KEY,
+    session_id       BIGINT REFERENCES smart_support_sessions(id) ON DELETE SET NULL,
+    target_user_uuid UUID NOT NULL,
+    rule_id          TEXT NOT NULL,
+    verdict          TEXT NOT NULL,
+    comment          TEXT,
+    admin_username   TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS smart_support_feedback_once_idx
+    ON smart_support_feedback (session_id, rule_id, admin_username)
+    WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS smart_support_feedback_rule_idx
+    ON smart_support_feedback (rule_id, created_at DESC);
 """
 
 
@@ -209,3 +226,50 @@ async def bump_ai_usage(db) -> int:
            RETURNING used""",
         current_period(),
     ) or 0)
+
+
+async def save_feedback(
+    db,
+    *,
+    session_id: int | None,
+    target_user_uuid: str,
+    rule_id: str,
+    verdict: str,
+    comment: str | None,
+    admin_username: str | None,
+) -> int:
+    """Store operator judgement; repeat clicks update the same judgement."""
+    if session_id is None:
+        return int(
+            await db.fetchval(
+                """INSERT INTO smart_support_feedback
+                           (session_id,target_user_uuid,rule_id,verdict,comment,admin_username)
+                     VALUES (NULL,$1::uuid,$2,$3,$4,$5) RETURNING id""",
+                target_user_uuid, rule_id, verdict, comment, admin_username,
+            )
+            or 0
+        )
+    return int(
+        await db.fetchval(
+            """INSERT INTO smart_support_feedback
+                       (session_id,target_user_uuid,rule_id,verdict,comment,admin_username)
+                 VALUES ($1,$2::uuid,$3,$4,$5,$6)
+                 ON CONFLICT (session_id,rule_id,admin_username)
+                     WHERE session_id IS NOT NULL
+                 DO UPDATE SET verdict=EXCLUDED.verdict,
+                               comment=EXCLUDED.comment,
+                               updated_at=NOW()
+                 RETURNING id""",
+            int(session_id), target_user_uuid, rule_id, verdict, comment, admin_username,
+        )
+        or 0
+    )
+
+
+async def feedback_summary(db, rule_id: str) -> Dict[str, int]:
+    rows = await db.fetch(
+        """SELECT verdict, COUNT(*)::int AS count
+             FROM smart_support_feedback WHERE rule_id=$1 GROUP BY verdict""",
+        rule_id,
+    )
+    return {str(row["verdict"]): int(row["count"]) for row in rows}

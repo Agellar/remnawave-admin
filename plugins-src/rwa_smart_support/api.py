@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from rwa_incident_hub import active_for_nodes
 
 from . import actions as actions_mod
 from . import ai, data, rules, settings as settings_mod, store
@@ -22,6 +23,8 @@ from .schemas import (
     AISettingsIn,
     AISettingsOut,
     AIStatusResponse,
+    FeedbackIn,
+    FeedbackOut,
     ReportResponse,
     SearchResponse,
     SessionListResponse,
@@ -56,7 +59,7 @@ def build_router(ctx) -> APIRouter:
     # ── отчёт ────────────────────────────────────────────────────
 
     @router.get("/report/{user_uuid}", response_model=ReportResponse)
-    async def report(user_uuid: str, _: Any = Depends(can_view)) -> ReportResponse:
+    async def report(user_uuid: str, admin: Any = Depends(can_view)) -> ReportResponse:
         thresholds = await settings_mod.get_thresholds(ctx.settings)
 
         user = await data.user_section(db, user_uuid)
@@ -67,6 +70,7 @@ def build_router(ctx) -> APIRouter:
         history = await data.history_section(db, user_uuid)
         client = await data.client_section(db, user_uuid, latest_versions)
         nodes = await data.nodes_section(db, user_uuid)
+        incidents = await active_for_nodes(db, [node["uuid"] for node in nodes])
         violations = await data.violations_section(db, user_uuid)
         correlations = await store.correlations_for_user(
             db, user_uuid, thresholds["correlation_max_age_minutes"]
@@ -76,6 +80,21 @@ def build_router(ctx) -> APIRouter:
             user=user, history=history, client=client, nodes=nodes,
             correlations=correlations, violations=violations, thresholds=thresholds,
         )
+        if incidents:
+            incident = incidents[0]
+            details = incident.get("details") or {}
+            hypotheses.insert(0, {
+                "rule_id": "active_infrastructure_incident",
+                "title": incident["title"],
+                "detail": (
+                    f"Активный инфраструктурный инцидент; transport="
+                    f"{incident.get('transport') or 'unknown'}, "
+                    f"просадка={details.get('drop_percent', '—')}%."
+                ),
+                "severity": "high",
+                "confidence": 0.98,
+                "suggested_action": "wait_or_switch_node",
+            })
 
         payload: Dict[str, Any] = {
             "generated_at": datetime.now(timezone.utc),
@@ -85,14 +104,55 @@ def build_router(ctx) -> APIRouter:
             "nodes": nodes,
             "correlations": correlations,
             "violations_recent": violations,
+            "incidents_active": incidents,
             "hypotheses": hypotheses,
             "ai_analysis": None,
             "session_id": None,
         }
 
         payload["ai_analysis"] = await _maybe_analyze(payload)
+        payload["session_id"] = await store.log_action(
+            db,
+            admin_username=getattr(admin, "username", None),
+            target_user_uuid=user_uuid,
+            action_id="report",
+            triggered_by_rule_id=None,
+            ok=True,
+            message="report_generated",
+            params={
+                "rule_ids": [item["rule_id"] for item in hypotheses],
+                "incident_ids": [item["id"] for item in incidents],
+                "ai_provider": (
+                    payload["ai_analysis"].get("provider_used")
+                    if payload["ai_analysis"] else None
+                ),
+            },
+        )
         ctx.telemetry.count("report")
         return ReportResponse(**payload)
+
+    @router.post("/feedback", response_model=FeedbackOut)
+    async def feedback(
+        body: FeedbackIn, admin: Any = Depends(can_execute)
+    ) -> FeedbackOut:
+        feedback_id = await store.save_feedback(
+            db,
+            session_id=body.session_id,
+            target_user_uuid=body.user_uuid,
+            rule_id=body.rule_id,
+            verdict=body.verdict,
+            comment=(body.comment or "").strip() or None,
+            admin_username=getattr(admin, "username", None),
+        )
+        if not feedback_id:
+            raise HTTPException(status_code=500, detail="feedback_not_saved")
+        ctx.telemetry.count(f"feedback.{body.verdict}")
+        return FeedbackOut(
+            id=feedback_id,
+            rule_id=body.rule_id,
+            verdict=body.verdict,
+            summary=await store.feedback_summary(db, body.rule_id),
+        )
 
     async def _maybe_analyze(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """ИИ — необязательная надстройка: если он выключен, не настроен,
