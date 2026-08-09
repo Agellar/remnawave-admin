@@ -20,8 +20,9 @@ services:
     volumes:
       - ./plugins-src/rwa_smart_support:/app/rwa_smart_support:ro
       - ./plugins-src/rwa_retention_radar:/app/rwa_retention_radar:ro
+      - ./plugins-src/rwa_local_block_radar:/app/rwa_local_block_radar:ro
     environment:
-      RWA_DEV_PLUGINS: rwa_smart_support.plugin:manifest,rwa_retention_radar.plugin:manifest
+      RWA_DEV_PLUGINS: rwa_smart_support.plugin:manifest,rwa_retention_radar.plugin:manifest,rwa_local_block_radar.plugin:manifest
 
   web-frontend:
     image: agellar/remnawave-admin-web-frontend:4.3.0-plugins-0fddebda

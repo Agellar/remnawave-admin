@@ -35,6 +35,9 @@ function transportLabel(t: (k: string) => string, transport: string): string {
 }
 
 function asnLabel(org: string | null | undefined, asn: number): string {
+  // Negative ids are stable local identifiers used by a self-hosted radar
+  // when no public ASN enrichment is available. Do not present them as ASNs.
+  if (asn <= 0) return org || 'Local'
   return org ? `${org} (AS${asn})` : `AS${asn}`
 }
 

@@ -1,0 +1,169 @@
+"""Local node-share baseline and dip detector."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from . import settings as settings_mod, store
+
+MIN_BASELINE_HOURS = 5
+MIN_BASELINE_SAMPLES = 60
+
+
+def classify_transport(tag: str | None) -> str:
+    value = (tag or "").strip().lower()
+    if not value:
+        return "mixed"
+    if "xhttp" in value or "splithttp" in value:
+        return "reality+xhttp" if "reality" in value else "xhttp"
+    if "httpupgrade" in value:
+        return "httpupgrade"
+    if "reality" in value:
+        return "reality"
+    if "websocket" in value or "-ws" in value or value.endswith("ws"):
+        return "ws"
+    for needle, label in (
+        ("grpc", "grpc"), ("trojan", "trojan"), ("shadowsocks", "ss"),
+        ("kcp", "kcp"), ("quic", "quic"), ("h2", "h2"),
+        ("tls", "tls"), ("raw", "raw"),
+    ):
+        if needle in value:
+            return label
+    return value[:64] or "other"
+
+
+async def current_nodes(db, window_minutes: int) -> list[dict]:
+    nodes = await db.fetch(
+        """SELECT uuid::text AS node_uuid, name AS node_name,
+                  COALESCE(users_online, 0)::int AS online,
+                  COALESCE(is_connected, false) AS node_alive,
+                  COALESCE(agent_version, 'unknown') AS agent_version,
+                  COALESCE(raw_data::jsonb #>> '{provider,name}', name) AS provider_name
+           FROM nodes WHERE NOT COALESCE(is_disabled, false)
+           ORDER BY name"""
+    )
+    tags = await db.fetch(
+        """SELECT node_uuid::text AS node_uuid,
+                  device_info->>'inbound_tag' AS inbound_tag, COUNT(*)::int AS hits
+           FROM user_connections
+           WHERE connected_at >= NOW() - make_interval(mins => $1)
+             AND COALESCE(device_info->>'inbound_tag', '') <> ''
+           GROUP BY node_uuid, device_info->>'inbound_tag'
+           ORDER BY node_uuid, hits DESC""",
+        window_minutes,
+    )
+    primary: dict[str, str] = {}
+    for item in tags:
+        primary.setdefault(str(item["node_uuid"]), str(item["inbound_tag"] or ""))
+
+    total = sum(int(row["online"] or 0) for row in nodes if row["node_alive"])
+    result = []
+    for raw in nodes:
+        row = dict(raw)
+        row["transport"] = classify_transport(primary.get(row["node_uuid"]))
+        row["total_online"] = total
+        row["share"] = (row["online"] / total) if total > 0 else 0.0
+        result.append(row)
+    return result
+
+
+def _baseline_ready(base: dict | None) -> bool:
+    if not base or int(base.get("samples") or 0) < MIN_BASELINE_SAMPLES:
+        return False
+    first = base.get("first_at")
+    if not first:
+        return False
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - first).total_seconds() >= MIN_BASELINE_HOURS * 3600
+
+
+def _is_dip(sample: dict, base: dict, cfg: dict) -> bool:
+    frac = float(cfg["dip_frac"])
+    return (
+        float(base["online"] or 0) >= int(cfg["dip_min_users"])
+        and float(sample["share"]) <= float(base["share"] or 0) * (1.0 - frac)
+        and int(sample["online"]) <= float(base["online"] or 0) * (1.0 - frac * 0.50)
+    )
+
+
+def _is_recovered(sample: dict, base: dict, cfg: dict) -> bool:
+    frac = float(cfg["dip_frac"])
+    return (
+        float(sample["share"]) >= float(base["share"] or 0) * (1.0 - frac * 0.35)
+        or int(sample["online"]) >= float(base["online"] or 0) * (1.0 - frac * 0.25)
+    )
+
+
+async def run_tick(ctx, state: dict) -> None:
+    cfg = await settings_mod.get(ctx.settings)
+    rows = await current_nodes(ctx.db, int(cfg["online_window_minutes"]))
+    await store.insert_samples(ctx.db, rows)
+    await store.cleanup(ctx.db, int(cfg["dip_history_days"]))
+
+    created = resolved = measured = 0
+    for row in rows:
+        base = await store.baseline(ctx.db, row["node_uuid"], int(cfg["dip_history_days"]))
+        opened = await store.open_alert(ctx.db, row["node_uuid"])
+        if not _baseline_ready(base):
+            continue
+        measured += 1
+        recent = await store.recent_samples(ctx.db, row["node_uuid"], int(cfg["dip_confirm_ticks"]))
+
+        if opened:
+            if len(recent) >= int(cfg["dip_confirm_ticks"]) and all(
+                _is_recovered(sample, base, cfg) for sample in recent
+            ):
+                await store.resolve_alert(ctx.db, int(opened["id"]))
+                resolved += 1
+                if cfg["notify_enabled"] and cfg["notify_resolved"]:
+                    await _notify(ctx, row, base, resolved_event=True)
+            continue
+
+        if not cfg["dip_enabled"]:
+            continue
+        if not row["node_alive"] and not cfg["dip_notify_offline"]:
+            continue
+        if len(recent) < int(cfg["dip_confirm_ticks"]):
+            continue
+        if all(_is_dip(sample, base, cfg) for sample in recent):
+            alert_id = await store.create_alert(ctx.db, row, base)
+            if alert_id:
+                created += 1
+                if cfg["notify_enabled"]:
+                    await _notify(ctx, row, base, resolved_event=False)
+
+    state["last_tick"] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "ok": True,
+        "note": "local-only; no data leaves this panel",
+        "nodes_total": len(rows),
+        "links_active": len(rows),
+        "cells": len(rows),
+        "accepted": len(rows),
+        "rejected": 0,
+        "alerts_locked": False,
+        "alerts_new": created,
+        "alerts_resolved": resolved,
+        "notified": 0 if not cfg["notify_enabled"] else created + resolved,
+        "measured": measured,
+    }
+
+
+async def _notify(ctx, row: dict, base: dict, *, resolved_event: bool) -> None:
+    from web.backend.core.plugin_api import panel_notify
+
+    title = "Локальный радар: восстановление" if resolved_event else "Локальный радар: просадка"
+    body = (
+        f"Нода: <b>{row['node_name']}</b>\n"
+        f"Провайдер: <b>{row['provider_name']}</b>\n"
+        f"Онлайн: <b>{row['online']}</b>, норма: <b>{float(base['online']):.0f}</b>\n"
+        f"Транспорт: <code>{row['transport']}</code>"
+    )
+    await panel_notify(
+        title=title,
+        body=body,
+        severity="info" if resolved_event else "warning",
+        link="/plugins/block-radar",
+        plugin_id=ctx.plugin_id,
+        group_key=f"local-block-radar:{row['node_uuid']}",
+    )
