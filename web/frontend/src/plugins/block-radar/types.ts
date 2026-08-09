@@ -110,6 +110,43 @@ export interface RadarAIStatus {
   monthly_limit: number
 }
 
+export interface QCodeUsageKey {
+  name?: string | null
+  is_active: boolean
+  expires_at?: string | null
+  expires_at_display?: string | null
+  current_daily_cost?: number | null
+  formatted_current_cost?: string | null
+  current_requests: number
+  current_tokens: number
+  daily_cost_limit?: number | null
+  has_monthly_quota: boolean
+  monthly_cost_limit?: number | null
+  monthly_cost_used?: number | null
+  monthly_cost_percentage?: number | null
+  opus_weekly_cost?: number | null
+  opus_weekly_limit?: number | null
+  is_near_cost_limit: boolean
+  is_near_opus_limit: boolean
+  has_error: boolean
+  error_code?: string | null
+}
+
+export interface QCodeUsageStatus {
+  configured: boolean
+  ok: boolean
+  error?: string | null
+  account?: {
+    active_api_keys: number
+    total_api_keys: number
+    today_cost_all_keys?: number | null
+    formatted_today_cost?: string | null
+    has_any_errors: boolean
+    last_updated?: string | null
+  } | null
+  keys: QCodeUsageKey[]
+}
+
 export interface RadarAlerts {
   items: RadarAlert[]
   total: number

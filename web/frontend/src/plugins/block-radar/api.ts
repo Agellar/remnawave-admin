@@ -5,6 +5,7 @@
 import client from '@/api/client'
 
 import type {
+  QCodeUsageStatus,
   RadarAlerts,
   RadarAIAnalysis,
   RadarAIStatus,
@@ -53,6 +54,11 @@ export async function fetchOverview(): Promise<RadarOverview> {
 
 export async function fetchAIStatus(): Promise<RadarAIStatus> {
   const { data } = await client.get<RadarAIStatus>(`${BASE}/ai/status`)
+  return data
+}
+
+export async function fetchQCodeUsage(): Promise<QCodeUsageStatus> {
+  const { data } = await client.get<QCodeUsageStatus>(`${BASE}/ai/qcode-usage`)
   return data
 }
 

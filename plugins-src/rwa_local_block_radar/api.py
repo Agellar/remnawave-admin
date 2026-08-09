@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from . import ai, settings as settings_mod, store
+from . import ai, qcode, settings as settings_mod, store
 
 RBAC_RESOURCES = {"block_radar": ["view", "settings"]}
 
@@ -139,6 +139,10 @@ def build_router(ctx, state: dict) -> APIRouter:
     @router.get("/ai/status")
     async def ai_status(_: Any = Depends(can_view)) -> dict:
         return await ai.provider_status(ctx.settings, ctx.db)
+
+    @router.get("/ai/qcode-usage")
+    async def qcode_usage(_: Any = Depends(can_settings)) -> dict:
+        return await qcode.usage_status()
 
     @router.post("/alerts/{alert_id}/ai/analyze")
     async def analyze_alert(

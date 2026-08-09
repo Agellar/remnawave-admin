@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import LicenseBanner from '@/components/plugins/license'
 
-import { asLicenseError, fetchAIStatus, fetchSettings, updateSettings } from './api'
+import { asLicenseError, fetchAIStatus, fetchQCodeUsage, fetchSettings, updateSettings } from './api'
 import type { RadarSettings, RadarSettingsPatch } from './types'
 
 const TOGGLES: Array<keyof RadarSettings> = [
@@ -44,6 +44,13 @@ export default function SettingsPage() {
     queryKey: ['block-radar-ai-status'],
     queryFn: fetchAIStatus,
     retry: false,
+  })
+  const qcodeUsage = useQuery({
+    queryKey: ['block-radar-qcode-usage'],
+    queryFn: fetchQCodeUsage,
+    retry: false,
+    staleTime: 60_000,
+    refetchInterval: 300_000,
   })
 
   const licenseError = useMemo(() => (error ? asLicenseError(error) : null), [error])
@@ -211,6 +218,79 @@ export default function SettingsPage() {
         <p className="text-[11px] text-dark-400">
           {t('plugins.block_radar.settings.ai_privacy')}
         </p>
+
+        <div className="border-t border-white/10 pt-4 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-xs font-semibold text-white uppercase tracking-wider">
+              {t('plugins.block_radar.settings.qcode_usage_title')}
+            </h3>
+            {qcodeUsage.data?.account?.last_updated && (
+              <span className="text-[10px] text-dark-400">
+                {t('plugins.block_radar.settings.qcode_updated', { value: qcodeUsage.data.account.last_updated })}
+              </span>
+            )}
+          </div>
+
+          {qcodeUsage.isLoading ? (
+            <p className="text-xs text-dark-400">{t('common.loading')}</p>
+          ) : !qcodeUsage.data?.configured ? (
+            <p className="text-xs text-dark-400">{t('plugins.block_radar.settings.qcode_not_configured')}</p>
+          ) : !qcodeUsage.data.ok ? (
+            <p className="text-xs text-amber-300">
+              {t('plugins.block_radar.settings.qcode_unavailable', { reason: qcodeUsage.data.error })}
+            </p>
+          ) : (
+            <>
+              <div className="grid gap-3 sm:grid-cols-3 text-xs">
+                <div>
+                  <div className="text-dark-400">{t('plugins.block_radar.settings.qcode_active_keys')}</div>
+                  <div className="text-white font-mono mt-1">
+                    {qcodeUsage.data.account?.active_api_keys ?? 0} / {qcodeUsage.data.account?.total_api_keys ?? 0}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-dark-400">{t('plugins.block_radar.settings.qcode_today_cost')}</div>
+                  <div className="text-white font-mono mt-1">
+                    {qcodeUsage.data.account?.formatted_today_cost ?? '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-dark-400">{t('plugins.block_radar.settings.qcode_health')}</div>
+                  <div className={`font-mono mt-1 ${qcodeUsage.data.account?.has_any_errors ? 'text-amber-300' : 'text-emerald-300'}`}>
+                    {qcodeUsage.data.account?.has_any_errors
+                      ? t('plugins.block_radar.settings.qcode_has_errors')
+                      : t('plugins.block_radar.settings.qcode_ok')}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {qcodeUsage.data.keys.map((key, index) => (
+                  <div key={`${key.name ?? 'key'}-${index}`} className="rounded-lg border border-white/10 bg-black/10 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs font-medium text-white">{key.name ?? t('plugins.block_radar.settings.qcode_key')}</div>
+                      <span className={`text-[10px] ${key.is_active ? 'text-emerald-300' : 'text-dark-400'}`}>
+                        {key.is_active ? t('plugins.block_radar.settings.qcode_active') : t('plugins.block_radar.settings.qcode_inactive')}
+                      </span>
+                    </div>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-4 text-[11px]">
+                      <div><span className="text-dark-400">{t('plugins.block_radar.settings.qcode_expires')}</span><div className="text-white mt-0.5">{key.expires_at_display ?? key.expires_at ?? '—'}</div></div>
+                      <div><span className="text-dark-400">{t('plugins.block_radar.settings.qcode_key_today')}</span><div className="text-white font-mono mt-0.5">{key.formatted_current_cost ?? '—'}{key.daily_cost_limit != null ? ` / $${key.daily_cost_limit}` : ''}</div></div>
+                      <div><span className="text-dark-400">{t('plugins.block_radar.settings.qcode_requests')}</span><div className="text-white font-mono mt-0.5">{key.current_requests.toLocaleString()}</div></div>
+                      <div><span className="text-dark-400">{t('plugins.block_radar.settings.qcode_tokens')}</span><div className="text-white font-mono mt-0.5">{key.current_tokens.toLocaleString()}</div></div>
+                    </div>
+                    {(key.is_near_cost_limit || key.is_near_opus_limit || key.has_error) && (
+                      <p className="mt-2 text-[11px] text-amber-300">
+                        {t('plugins.block_radar.settings.qcode_warning')}{key.error_code ? `: ${key.error_code}` : ''}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-dark-400">{t('plugins.block_radar.settings.qcode_read_only')}</p>
+            </>
+          )}
+        </div>
       </div>
     </div>
   )

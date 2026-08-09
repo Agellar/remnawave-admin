@@ -6,7 +6,7 @@ import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
-from rwa_local_block_radar import ai, engine, settings, store
+from rwa_local_block_radar import ai, engine, qcode, settings, store
 from rwa_local_block_radar.api import _alert, _local_id
 from rwa_local_block_radar.plugin import manifest
 
@@ -228,3 +228,60 @@ async def test_ai_call_uses_sonnet_tool_and_sanitized_context(monkeypatch):
     assert "user_uuid" not in serialized
     assert "telegram_id" not in serialized
     assert "Authorization" in captured["headers"]
+
+
+@pytest.mark.asyncio
+async def test_qcode_usage_is_read_only_and_strictly_allowlisted(monkeypatch):
+    captured = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def get(self, url, *, headers):
+            captured.append((url, headers))
+            if url.endswith("/me"):
+                return Response({"ok": True, "data": {
+                    "active_api_keys": 1,
+                    "total_api_keys": 1,
+                    "formatted_today_cost": "$0.16",
+                    "has_any_errors": False,
+                    "last_updated": "2026/08/09 17:47:56",
+                    "secret": "must-not-leak",
+                }})
+            return Response({"ok": True, "data": {"keys": [{
+                "name": "trial",
+                "is_active": True,
+                "expires_at": "2026-09-04",
+                "current_requests": 23,
+                "current_tokens": 40796,
+                "formatted_current_cost": "$0.16",
+                "api_key": "must-not-leak",
+            }]}})
+
+    monkeypatch.setenv("QCODE_OPENAPI_TOKEN", "qot_test_secret")
+    monkeypatch.setattr(qcode.httpx, "AsyncClient", lambda **_: Client())
+    result = await qcode.usage_status()
+
+    assert result["ok"] is True
+    assert result["account"]["active_api_keys"] == 1
+    assert result["keys"][0]["current_requests"] == 23
+    assert "secret" not in result["account"]
+    assert "api_key" not in result["keys"][0]
+    assert [url.rsplit("/", 1)[-1] for url, _ in captured] == ["me", "keys"]
+    assert all(
+        headers["Authorization"] == "Bearer qot_test_secret"
+        for _, headers in captured
+    )
