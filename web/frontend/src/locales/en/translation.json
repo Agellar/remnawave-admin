@@ -5711,6 +5711,24 @@
       "card_online": "Online / baseline",
       "card_panels": "Panels",
       "card_affected": "At risk",
+      "ai": {
+        "title": "Sonnet AI analysis",
+        "empty": "No analysis yet. Sonnet receives infrastructure aggregates only.",
+        "analyze": "Analyze with Sonnet",
+        "refresh": "Refresh analysis",
+        "ready": "AI analysis is ready",
+        "error": "AI analysis failed",
+        "evidence": "Observed evidence",
+        "recommendations": "Safe checks",
+        "support_note": "Support wording",
+        "classifications": {
+          "likely_block": "likely filtering",
+          "provider_outage": "provider outage",
+          "node_failure": "node failure",
+          "traffic_shift": "traffic shift",
+          "insufficient_data": "insufficient data"
+        }
+      },
       "status": {
         "title": "Collector",
         "never": "The collector has not completed a tick yet — data appears within a couple of minutes after install.",
@@ -5733,6 +5751,12 @@
         "save": "Save",
         "saved": "Settings saved",
         "save_error": "Failed to save settings",
+        "ai_title": "Sonnet incident analysis",
+        "ai_model": "Model",
+        "ai_provider": "Provider",
+        "ai_usage": "Calls this month",
+        "ai_not_configured": "not configured",
+        "ai_privacy": "Only node, transport and network aggregates are sent to the model. No user IPs, UUIDs or Telegram IDs are included.",
         "fields": {
           "notify_enabled": {
             "label": "Notify about new incidents",
@@ -5757,6 +5781,18 @@
           "dip_notify_offline": {
             "label": "Notify when the node is offline too",
             "help": "A disconnected node is usually reported by the panel itself, so the radar stays quiet during planned reboots. The drop is still recorded."
+          },
+          "ai_enabled": {
+            "label": "Enable Sonnet AI analysis",
+            "help": "AI explains incidents already confirmed by the detector; it cannot create or resolve them."
+          },
+          "ai_auto_analyze": {
+            "label": "Analyze new incidents automatically",
+            "help": "One Sonnet call after a new dip is confirmed. Repeated collector ticks do not call the model again."
+          },
+          "ai_monthly_limit": {
+            "label": "Monthly AI call limit",
+            "help": "Hard server-side limit from 1 to 1000; defaults to 100."
           }
         }
       },

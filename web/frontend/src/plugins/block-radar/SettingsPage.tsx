@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Save, Sliders } from '@/components/brand/icons'
+import { ArrowLeft, Save, Sliders, Sparkles } from '@/components/brand/icons'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import LicenseBanner from '@/components/plugins/license'
 
-import { asLicenseError, fetchSettings, updateSettings } from './api'
+import { asLicenseError, fetchAIStatus, fetchSettings, updateSettings } from './api'
 import type { RadarSettings, RadarSettingsPatch } from './types'
 
 const TOGGLES: Array<keyof RadarSettings> = [
@@ -20,6 +20,8 @@ const TOGGLES: Array<keyof RadarSettings> = [
   'send_org_names',
   'dip_enabled',
   'dip_notify_offline',
+  'ai_enabled',
+  'ai_auto_analyze',
 ]
 
 /**
@@ -37,6 +39,11 @@ export default function SettingsPage() {
     queryFn: fetchSettings,
     retry: false,
     staleTime: 10_000,
+  })
+  const aiStatus = useQuery({
+    queryKey: ['block-radar-ai-status'],
+    queryFn: fetchAIStatus,
+    retry: false,
   })
 
   const licenseError = useMemo(() => (error ? asLicenseError(error) : null), [error])
@@ -154,6 +161,56 @@ export default function SettingsPage() {
             {t('plugins.block_radar.settings.fields.online_window_minutes.help')}
           </p>
         </div>
+      </div>
+
+      <div className="glass-card p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-violet-400" aria-hidden />
+          <h2 className="text-sm font-semibold text-white uppercase tracking-wider">
+            {t('plugins.block_radar.settings.ai_title')}
+          </h2>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3 text-xs">
+          <div>
+            <div className="text-dark-400">{t('plugins.block_radar.settings.ai_model')}</div>
+            <div className="text-white font-mono mt-1">{draft.ai_model}</div>
+          </div>
+          <div>
+            <div className="text-dark-400">{t('plugins.block_radar.settings.ai_provider')}</div>
+            <div className="text-white font-mono mt-1">
+              {aiStatus.data?.configured ? aiStatus.data.provider : t('plugins.block_radar.settings.ai_not_configured')}
+            </div>
+          </div>
+          <div>
+            <div className="text-dark-400">{t('plugins.block_radar.settings.ai_usage')}</div>
+            <div className="text-white font-mono mt-1">
+              {aiStatus.data?.used ?? 0} / {draft.ai_monthly_limit}
+            </div>
+          </div>
+        </div>
+        <div className="space-y-1.5 max-w-xs">
+          <Label htmlFor="ai_monthly_limit" className="text-xs text-dark-300">
+            {t('plugins.block_radar.settings.fields.ai_monthly_limit.label')}
+          </Label>
+          <Input
+            id="ai_monthly_limit"
+            type="number"
+            min={1}
+            max={1000}
+            value={String(draft.ai_monthly_limit)}
+            onChange={(e) => {
+              const v = Number(e.target.value)
+              if (!Number.isNaN(v)) setValue('ai_monthly_limit', v)
+            }}
+            className="h-9"
+          />
+          <p className="text-[11px] text-dark-400">
+            {t('plugins.block_radar.settings.fields.ai_monthly_limit.help')}
+          </p>
+        </div>
+        <p className="text-[11px] text-dark-400">
+          {t('plugins.block_radar.settings.ai_privacy')}
+        </p>
       </div>
     </div>
   )

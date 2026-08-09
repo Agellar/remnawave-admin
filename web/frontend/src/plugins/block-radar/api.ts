@@ -6,6 +6,8 @@ import client from '@/api/client'
 
 import type {
   RadarAlerts,
+  RadarAIAnalysis,
+  RadarAIStatus,
   RadarHosters,
   RadarOverview,
   RadarSettings,
@@ -46,5 +48,21 @@ export async function fetchHosters(): Promise<RadarHosters> {
 
 export async function fetchOverview(): Promise<RadarOverview> {
   const { data } = await client.get<RadarOverview>(`${BASE}/overview`)
+  return data
+}
+
+export async function fetchAIStatus(): Promise<RadarAIStatus> {
+  const { data } = await client.get<RadarAIStatus>(`${BASE}/ai/status`)
+  return data
+}
+
+export async function analyzeAlert(
+  alertId: number,
+  force = false,
+): Promise<RadarAIAnalysis> {
+  const { data } = await client.post<RadarAIAnalysis>(
+    `${BASE}/alerts/${alertId}/ai/analyze`,
+    { force },
+  )
   return data
 }

@@ -1,13 +1,14 @@
 """API contract consumed by the built-in Block Radar UI."""
 from __future__ import annotations
 
+import json
 import zlib
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from . import settings as settings_mod, store
+from . import ai, settings as settings_mod, store
 
 RBAC_RESOURCES = {"block_radar": ["view", "settings"]}
 
@@ -20,6 +21,30 @@ def _local_id(value: str | None) -> int:
 def _alert(row) -> dict:
     host = row["provider_name"] or row["node_name"]
     offline = not bool(row["node_alive"])
+    def json_list(value) -> list[str]:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                value = []
+        return [str(item) for item in (value or [])]
+
+    analysis = None
+    if "ai_id" in row and row["ai_id"] is not None:
+        analysis = {
+            "id": int(row["ai_id"]),
+            "alert_id": int(row["id"]),
+            "classification": row["ai_classification"],
+            "confidence": float(row["ai_confidence"]),
+            "summary": row["ai_summary"],
+            "evidence": json_list(row["ai_evidence"]),
+            "recommendations": json_list(row["ai_recommendations"]),
+            "support_note": row["ai_support_note"],
+            "provider": row["ai_provider"],
+            "model": row["ai_model"],
+            "created_at": row["ai_created_at"].isoformat(),
+            "updated_at": row["ai_updated_at"].isoformat(),
+        }
     return {
         "id": int(row["id"]),
         "kind": "hoster_outage" if offline else "block",
@@ -40,6 +65,7 @@ def _alert(row) -> dict:
             "online_now": int(row["online"]),
             "lost": offline,
         },
+        "ai_analysis": analysis,
     }
 
 
@@ -88,15 +114,49 @@ def build_router(ctx, state: dict) -> APIRouter:
     ) -> dict:
         where = ""
         if active is True:
-            where = "WHERE resolved_at IS NULL"
+            where = "WHERE a.resolved_at IS NULL"
         elif active is False:
-            where = "WHERE resolved_at IS NOT NULL"
-        total = int(await ctx.db.fetchval(f"SELECT COUNT(*) FROM local_block_radar_alerts {where}") or 0)
+            where = "WHERE a.resolved_at IS NOT NULL"
+        total = int(await ctx.db.fetchval(
+            f"SELECT COUNT(*) FROM local_block_radar_alerts a {where}"
+        ) or 0)
         rows = await ctx.db.fetch(
-            f"SELECT * FROM local_block_radar_alerts {where} ORDER BY since DESC LIMIT $1 OFFSET $2",
+            f"""SELECT a.*,
+                       x.id AS ai_id, x.classification AS ai_classification,
+                       x.confidence AS ai_confidence, x.summary AS ai_summary,
+                       x.evidence AS ai_evidence,
+                       x.recommendations AS ai_recommendations,
+                       x.support_note AS ai_support_note, x.provider AS ai_provider,
+                       x.model AS ai_model, x.created_at AS ai_created_at,
+                       x.updated_at AS ai_updated_at
+                  FROM local_block_radar_alerts a
+             LEFT JOIN local_block_radar_ai_analyses x ON x.alert_id=a.id
+                  {where} ORDER BY a.since DESC LIMIT $1 OFFSET $2""",
             limit, offset,
         )
         return {"items": [_alert(row) for row in rows], "total": total}
+
+    @router.get("/ai/status")
+    async def ai_status(_: Any = Depends(can_view)) -> dict:
+        return await ai.provider_status(ctx.settings, ctx.db)
+
+    @router.post("/alerts/{alert_id}/ai/analyze")
+    async def analyze_alert(
+        alert_id: int,
+        body: dict[str, Any] | None = Body(default=None),
+        _: Any = Depends(can_settings),
+    ) -> dict:
+        try:
+            return await ai.analyze_alert(
+                ctx, alert_id, force=bool((body or {}).get("force", False))
+            )
+        except ai.AIError as exc:
+            detail = str(exc)
+            if detail == "alert_not_found":
+                raise HTTPException(status_code=404, detail=detail) from exc
+            if detail in {"ai_disabled", "monthly_limit_reached"}:
+                raise HTTPException(status_code=409, detail=detail) from exc
+            raise HTTPException(status_code=503, detail=detail) from exc
 
     @router.get("/settings")
     async def get_settings(_: Any = Depends(can_view)) -> dict:

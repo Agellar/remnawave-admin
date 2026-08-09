@@ -38,6 +38,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS local_block_radar_one_open_alert_idx
     ON local_block_radar_alerts (node_uuid) WHERE resolved_at IS NULL;
 CREATE INDEX IF NOT EXISTS local_block_radar_alerts_since_idx
     ON local_block_radar_alerts (since DESC);
+
+CREATE TABLE IF NOT EXISTS local_block_radar_ai_analyses (
+    id BIGSERIAL PRIMARY KEY,
+    alert_id BIGINT NOT NULL REFERENCES local_block_radar_alerts(id) ON DELETE CASCADE,
+    classification TEXT NOT NULL,
+    confidence DOUBLE PRECISION NOT NULL,
+    summary TEXT NOT NULL,
+    evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+    recommendations JSONB NOT NULL DEFAULT '[]'::jsonb,
+    support_note TEXT,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (alert_id)
+);
+CREATE INDEX IF NOT EXISTS local_block_radar_ai_updated_idx
+    ON local_block_radar_ai_analyses (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS local_block_radar_ai_usage (
+    period TEXT PRIMARY KEY,
+    used INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -126,3 +150,123 @@ async def resolve_alert(db, alert_id: int) -> None:
         "UPDATE local_block_radar_alerts SET resolved_at=NOW() WHERE id=$1 AND resolved_at IS NULL",
         alert_id,
     )
+
+
+async def alert_by_id(db, alert_id: int):
+    row = await db.fetchrow(
+        "SELECT * FROM local_block_radar_alerts WHERE id=$1", int(alert_id)
+    )
+    return dict(row) if row else None
+
+
+async def analysis_for_alert(db, alert_id: int) -> dict | None:
+    row = await db.fetchrow(
+        "SELECT * FROM local_block_radar_ai_analyses WHERE alert_id=$1", int(alert_id)
+    )
+    return dict(row) if row else None
+
+
+async def analysis_context(db, alert: dict, *, sample_limit: int = 12) -> dict:
+    samples = await db.fetch(
+        """SELECT online, total_online, share, node_alive, sampled_at
+             FROM local_block_radar_samples
+            WHERE node_uuid=$1::uuid
+            ORDER BY sampled_at DESC LIMIT $2""",
+        str(alert["node_uuid"]), int(sample_limit),
+    )
+    latest_nodes = await db.fetch(
+        """SELECT DISTINCT ON (node_uuid)
+                  node_name, provider_name, transport, online, total_online,
+                  share, node_alive, sampled_at
+             FROM local_block_radar_samples
+            ORDER BY node_uuid, sampled_at DESC"""
+    )
+    return {
+        "alert": {
+            "id": int(alert["id"]),
+            "node_name": alert["node_name"],
+            "provider_name": alert["provider_name"],
+            "transport": alert["transport"],
+            "since": alert["since"],
+            "resolved_at": alert["resolved_at"],
+            "online": int(alert["online"]),
+            "baseline_online": round(float(alert["baseline_online"]), 3),
+            "share": round(float(alert["share"]), 6),
+            "baseline_share": round(float(alert["baseline_share"]), 6),
+            "node_alive": bool(alert["node_alive"]),
+        },
+        "recent_samples_newest_first": [
+            {
+                "online": int(row["online"]),
+                "total_online": int(row["total_online"]),
+                "share": round(float(row["share"]), 6),
+                "node_alive": bool(row["node_alive"]),
+                "sampled_at": row["sampled_at"],
+            }
+            for row in samples
+        ],
+        "network_latest": [
+            {
+                "node_name": row["node_name"],
+                "provider_name": row["provider_name"],
+                "transport": row["transport"],
+                "online": int(row["online"]),
+                "total_online": int(row["total_online"]),
+                "share": round(float(row["share"]), 6),
+                "node_alive": bool(row["node_alive"]),
+                "sampled_at": row["sampled_at"],
+            }
+            for row in latest_nodes
+        ],
+    }
+
+
+async def reserve_ai_call(db, *, period: str, limit: int) -> int | None:
+    value = await db.fetchval(
+        """INSERT INTO local_block_radar_ai_usage (period, used) VALUES ($1, 1)
+           ON CONFLICT (period) DO UPDATE
+             SET used=local_block_radar_ai_usage.used+1
+           WHERE local_block_radar_ai_usage.used < $2
+           RETURNING used""",
+        period, int(limit),
+    )
+    return int(value) if value is not None else None
+
+
+async def ai_usage(db, period: str) -> int:
+    return int(
+        await db.fetchval(
+            "SELECT used FROM local_block_radar_ai_usage WHERE period=$1", period
+        )
+        or 0
+    )
+
+
+async def save_analysis(
+    db, *, alert_id: int, result: dict, provider: str, model: str, input_hash: str
+) -> dict:
+    import json
+
+    row = await db.fetchrow(
+        """INSERT INTO local_block_radar_ai_analyses
+                  (alert_id, classification, confidence, summary, evidence,
+                   recommendations, support_note, provider, model, input_hash)
+           VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10)
+           ON CONFLICT (alert_id) DO UPDATE SET
+               classification=EXCLUDED.classification,
+               confidence=EXCLUDED.confidence,
+               summary=EXCLUDED.summary,
+               evidence=EXCLUDED.evidence,
+               recommendations=EXCLUDED.recommendations,
+               support_note=EXCLUDED.support_note,
+               provider=EXCLUDED.provider,
+               model=EXCLUDED.model,
+               input_hash=EXCLUDED.input_hash,
+               updated_at=NOW()
+           RETURNING *""",
+        int(alert_id), result["classification"], float(result["confidence"]),
+        result["summary"], json.dumps(result["evidence"], ensure_ascii=False),
+        json.dumps(result["recommendations"], ensure_ascii=False),
+        result.get("support_note"), provider, model, input_hash,
+    )
+    return dict(row)

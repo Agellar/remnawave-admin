@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from rwa_local_block_radar import engine, settings, store
-from rwa_local_block_radar.api import _local_id
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock
+
+from rwa_local_block_radar import ai, engine, settings, store
+from rwa_local_block_radar.api import _alert, _local_id
 from rwa_local_block_radar.plugin import manifest
 
 
@@ -65,3 +68,163 @@ def test_manifest_uses_builtin_block_radar_ui_without_license():
 def test_schema_prevents_duplicate_open_incidents():
     assert "local_block_radar_one_open_alert_idx" in store.DDL
     assert "WHERE resolved_at IS NULL" in store.DDL
+
+
+def test_ai_schema_and_prompt_are_infrastructure_only():
+    assert "local_block_radar_ai_analyses" in store.DDL
+    assert "local_block_radar_ai_usage" in store.DDL
+    assert "user_uuid" not in store.DDL
+    assert "telegram_id" not in store.DDL
+    assert "likely_block" in ai.SYSTEM_PROMPT
+    assert "provider_outage" in ai.SYSTEM_PROMPT
+    assert "node_failure" in ai.SYSTEM_PROMPT
+    assert "traffic_shift" in ai.SYSTEM_PROMPT
+    assert "insufficient_data" in ai.SYSTEM_PROMPT
+    assert "не доказывает" in ai.SYSTEM_PROMPT
+
+
+def test_ai_is_pinned_to_sonnet_and_block_confidence_is_calibrated():
+    cfg = settings._validated({"ai_model": "gpt-5", "ai_monthly_limit": 9999})
+    assert cfg["ai_model"] == "claude-sonnet-4-6"
+    assert cfg["ai_monthly_limit"] == 1000
+    result = ai._validate(
+        {
+            "classification": "likely_block",
+            "confidence": 0.98,
+            "summary": "Избирательная просадка.",
+            "evidence": ["Нода жива"],
+            "recommendations": ["Сравнить внешние пробы"],
+            "support_note": "Наблюдаем сетевую деградацию.",
+        }
+    )
+    assert result["confidence"] == 0.70
+
+
+def test_alert_api_decodes_jsonb_ai_arrays():
+    now = datetime.now(timezone.utc)
+    row = {
+        "id": 5,
+        "provider_name": "provider-a",
+        "node_name": "node-a",
+        "node_alive": True,
+        "transport": "reality",
+        "since": now,
+        "resolved_at": None,
+        "online": 4,
+        "baseline_online": 20,
+        "ai_id": 7,
+        "ai_classification": "traffic_shift",
+        "ai_confidence": 0.6,
+        "ai_summary": "summary",
+        "ai_evidence": '["one"]',
+        "ai_recommendations": '["two"]',
+        "ai_support_note": "note",
+        "ai_provider": "qcode",
+        "ai_model": "claude-sonnet-4-6",
+        "ai_created_at": now,
+        "ai_updated_at": now,
+    }
+    item = _alert(row)
+    assert item["ai_analysis"]["evidence"] == ["one"]
+    assert item["ai_analysis"]["recommendations"] == ["two"]
+
+
+@pytest.mark.asyncio
+async def test_ai_call_uses_sonnet_tool_and_sanitized_context(monkeypatch):
+    class FakeSettings:
+        async def get(self, key, default=None):
+            return default
+
+    captured = {}
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "record_radar_analysis",
+                        "input": {
+                            "classification": "traffic_shift",
+                            "confidence": 0.62,
+                            "summary": "Остальная сеть выросла, нода доступна.",
+                            "evidence": ["node_alive=true"],
+                            "recommendations": ["Сравнить транспорт на соседней ноде"],
+                            "support_note": "Наблюдаем перераспределение нагрузки.",
+                        },
+                    }
+                ]
+            }
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def post(self, url, *, json, headers):
+            captured.update(url=url, body=json, headers=headers)
+            return Response()
+
+    monkeypatch.setattr(ai.httpx, "AsyncClient", lambda **_: Client())
+    monkeypatch.setattr(
+        ai,
+        "get_ai_provider",
+        AsyncMock(return_value={"provider": "qcode", "api_key": "secret"}),
+    )
+    monkeypatch.setattr(store, "analysis_for_alert", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        store,
+        "alert_by_id",
+        AsyncMock(return_value={
+            "id": 9,
+            "node_uuid": "00000000-0000-0000-0000-000000000009",
+            "node_name": "node-a",
+            "provider_name": "provider-a",
+            "transport": "reality",
+            "since": datetime.now(timezone.utc),
+            "resolved_at": None,
+            "online": 3,
+            "baseline_online": 20,
+            "share": 0.02,
+            "baseline_share": 0.15,
+            "node_alive": True,
+        }),
+    )
+    context = {
+        "alert": {"node_name": "node-a", "online": 3},
+        "recent_samples_newest_first": [],
+        "network_latest": [],
+    }
+    monkeypatch.setattr(store, "analysis_context", AsyncMock(return_value=context))
+    monkeypatch.setattr(store, "reserve_ai_call", AsyncMock(return_value=1))
+
+    async def saved(_db, **kwargs):
+        result = kwargs["result"]
+        now = datetime.now(timezone.utc)
+        return {
+            "id": 1,
+            "alert_id": kwargs["alert_id"],
+            **result,
+            "provider": kwargs["provider"],
+            "model": kwargs["model"],
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    monkeypatch.setattr(store, "save_analysis", saved)
+    ctx = type("Ctx", (), {"settings": FakeSettings(), "db": object()})()
+
+    result = await ai.analyze_alert(ctx, 9)
+
+    assert result["classification"] == "traffic_shift"
+    assert captured["body"]["model"] == "claude-sonnet-4-6"
+    assert captured["body"]["tool_choice"]["name"] == "record_radar_analysis"
+    serialized = captured["body"]["messages"][0]["content"]
+    assert "node-a" in serialized
+    assert "user_uuid" not in serialized
+    assert "telegram_id" not in serialized
+    assert "Authorization" in captured["headers"]

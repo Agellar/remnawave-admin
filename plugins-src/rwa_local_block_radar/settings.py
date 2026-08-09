@@ -16,6 +16,11 @@ DEFAULTS: dict[str, Any] = {
     "dip_min_users": 8,
     "dip_confirm_ticks": 3,
     "dip_history_days": 7,
+    # Sonnet is an explanatory layer over confirmed deterministic alerts.
+    "ai_enabled": True,
+    "ai_auto_analyze": True,
+    "ai_model": "claude-sonnet-4-6",
+    "ai_monthly_limit": 100,
 }
 
 
@@ -51,4 +56,14 @@ def _validated(values: dict[str, Any]) -> dict[str, Any]:
         "dip_min_users": max(3, min(1000, int(values.get("dip_min_users", 8)))),
         "dip_confirm_ticks": max(2, min(12, int(values.get("dip_confirm_ticks", 3)))),
         "dip_history_days": max(1, min(30, int(values.get("dip_history_days", 7)))),
+        "ai_enabled": bool(values.get("ai_enabled", True)),
+        "ai_auto_analyze": bool(values.get("ai_auto_analyze", True)),
+        # This plugin is deliberately calibrated for Sonnet. A malformed or
+        # non-Sonnet override falls back instead of silently changing model family.
+        "ai_model": (
+            str(values.get("ai_model") or "claude-sonnet-4-6").strip()
+            if str(values.get("ai_model") or "").strip().startswith("claude-sonnet-")
+            else "claude-sonnet-4-6"
+        ),
+        "ai_monthly_limit": max(1, min(1000, int(values.get("ai_monthly_limit", 100)))),
     }

@@ -75,6 +75,39 @@ export interface RadarAlert {
   baseline?: number | null
   outage_summary?: string | null
   affected: RadarAffected
+  ai_analysis?: RadarAIAnalysis | null
+}
+
+export type RadarAIClassification =
+  | 'likely_block'
+  | 'provider_outage'
+  | 'node_failure'
+  | 'traffic_shift'
+  | 'insufficient_data'
+
+export interface RadarAIAnalysis {
+  id: number
+  alert_id: number
+  classification: RadarAIClassification
+  confidence: number
+  summary: string
+  evidence: string[]
+  recommendations: string[]
+  support_note?: string | null
+  provider: string
+  model: string
+  created_at: string
+  updated_at: string
+}
+
+export interface RadarAIStatus {
+  enabled: boolean
+  auto_analyze: boolean
+  configured: boolean
+  provider?: string | null
+  model: string
+  used: number
+  monthly_limit: number
 }
 
 export interface RadarAlerts {
@@ -95,6 +128,10 @@ export interface RadarSettings {
   dip_min_users: number
   dip_confirm_ticks: number
   dip_history_days: number
+  ai_enabled: boolean
+  ai_auto_analyze: boolean
+  ai_model: string
+  ai_monthly_limit: number
 }
 
 export type RadarSettingsPatch = Partial<RadarSettings>

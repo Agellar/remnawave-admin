@@ -1,14 +1,16 @@
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { Activity, CheckCircle, Server, Settings, ShieldBan, Zap } from '@/components/brand/icons'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Activity, CheckCircle, Loader2, Server, Settings, ShieldBan, Sparkles, Zap } from '@/components/brand/icons'
+import { toast } from 'sonner'
 
 import LicenseBanner from '@/components/plugins/license'
+import { Button } from '@/components/ui/button'
 
 import DataList from './DataList'
 
-import { asLicenseError, fetchAlerts, fetchHosters, fetchOverview, fetchStatus } from './api'
+import { analyzeAlert, asLicenseError, fetchAlerts, fetchHosters, fetchOverview, fetchStatus } from './api'
 import type {
   RadarAlert,
   RadarNodeDip,
@@ -376,7 +378,18 @@ function StatusCard({ tick }: { tick: RadarTick | null }) {
 
 function AlertCard({ alert }: { alert: RadarAlert }) {
   const { t } = useTranslation()
+  const qc = useQueryClient()
   const isOutage = alert.kind === 'operator_outage'
+  const analysis = alert.ai_analysis
+  const mutation = useMutation({
+    mutationFn: () => analyzeAlert(alert.id, Boolean(analysis)),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['block-radar-alerts-open'] })
+      void qc.invalidateQueries({ queryKey: ['block-radar-alerts-history'] })
+      toast.success(t('plugins.block_radar.ai.ready'))
+    },
+    onError: () => toast.error(t('plugins.block_radar.ai.error')),
+  })
 
   return (
     <div
@@ -427,6 +440,67 @@ function AlertCard({ alert }: { alert: RadarAlert }) {
           <span className="text-white">{alert.affected.nodes!.join(', ')}</span>
         </p>
       )}
+      <div className="pt-2 border-t border-white/5 space-y-3">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-violet-400" aria-hidden />
+          <span className="text-xs font-medium text-white">
+            {t('plugins.block_radar.ai.title')}
+          </span>
+          {analysis && (
+            <span className="text-[10px] text-violet-300 ml-auto">
+              {t(`plugins.block_radar.ai.classifications.${analysis.classification}`)} ·{' '}
+              {Math.round(analysis.confidence * 100)}%
+            </span>
+          )}
+        </div>
+        {analysis ? (
+          <div className="space-y-2 text-xs">
+            <p className="text-dark-200 leading-relaxed">{analysis.summary}</p>
+            {analysis.evidence.length > 0 && (
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-dark-400 mb-1">
+                  {t('plugins.block_radar.ai.evidence')}
+                </div>
+                <ul className="space-y-1 text-dark-300 list-disc pl-4">
+                  {analysis.evidence.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </div>
+            )}
+            {analysis.recommendations.length > 0 && (
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-dark-400 mb-1">
+                  {t('plugins.block_radar.ai.recommendations')}
+                </div>
+                <ul className="space-y-1 text-dark-300 list-disc pl-4">
+                  {analysis.recommendations.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </div>
+            )}
+            {analysis.support_note && (
+              <div className="rounded-lg bg-violet-500/10 p-2 text-violet-100">
+                <span className="text-violet-300">{t('plugins.block_radar.ai.support_note')}: </span>
+                {analysis.support_note}
+              </div>
+            )}
+            <div className="text-[10px] text-dark-500">{analysis.model}</div>
+          </div>
+        ) : (
+          <p className="text-xs text-dark-400">{t('plugins.block_radar.ai.empty')}</p>
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={mutation.isPending}
+          onClick={() => mutation.mutate()}
+        >
+          {mutation.isPending ? (
+            <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" aria-hidden />
+          ) : (
+            <Sparkles className="w-3.5 h-3.5 mr-2" aria-hidden />
+          )}
+          {t(analysis ? 'plugins.block_radar.ai.refresh' : 'plugins.block_radar.ai.analyze')}
+        </Button>
+      </div>
     </div>
   )
 }

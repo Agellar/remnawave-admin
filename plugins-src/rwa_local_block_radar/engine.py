@@ -102,6 +102,7 @@ async def run_tick(ctx, state: dict) -> None:
     await store.cleanup(ctx.db, int(cfg["dip_history_days"]))
 
     created = resolved = measured = 0
+    new_alert_ids: list[int] = []
     for row in rows:
         base = await store.baseline(ctx.db, row["node_uuid"], int(cfg["dip_history_days"]))
         opened = await store.open_alert(ctx.db, row["node_uuid"])
@@ -124,7 +125,7 @@ async def run_tick(ctx, state: dict) -> None:
                 if cfg["notify_enabled"] and cfg["notify_resolved"]:
                     await _notify(ctx, row, base, resolved_event=True)
             else:
-                await _publish_incident(ctx, row, base)
+                await _publish_incident(ctx, row, base, alert_id=int(opened["id"]))
             continue
 
         if not cfg["dip_enabled"]:
@@ -136,7 +137,8 @@ async def run_tick(ctx, state: dict) -> None:
         if all(_is_dip(sample, base, cfg) for sample in recent):
             alert_id = await store.create_alert(ctx.db, row, base)
             if alert_id:
-                await _publish_incident(ctx, row, base)
+                await _publish_incident(ctx, row, base, alert_id=alert_id)
+                new_alert_ids.append(alert_id)
                 created += 1
                 if cfg["notify_enabled"]:
                     await _notify(ctx, row, base, resolved_event=False)
@@ -156,13 +158,29 @@ async def run_tick(ctx, state: dict) -> None:
         "notified": 0 if not cfg["notify_enabled"] else created + resolved,
         "measured": measured,
     }
+    state["new_alert_ids"] = new_alert_ids
 
 
-async def _publish_incident(ctx, row: dict, base: dict) -> None:
+async def _publish_incident(
+    ctx, row: dict, base: dict, *, alert_id: int | None = None
+) -> None:
     """Expose a privacy-safe infrastructure incident to sibling plugins."""
     online = int(row["online"] or 0)
     baseline_online = float(base["online"] or 0)
     drop_percent = round(max(0.0, 1.0 - online / baseline_online) * 100) if baseline_online else 0
+    analysis = await store.analysis_for_alert(ctx.db, alert_id) if alert_id else None
+    details = {
+        "node_name": row["node_name"],
+        "provider_name": row["provider_name"],
+        "online": online,
+        "baseline_online": round(baseline_online, 1),
+        "drop_percent": drop_percent,
+    }
+    if analysis:
+        details["ai_classification"] = analysis["classification"]
+        details["ai_confidence"] = round(float(analysis["confidence"]), 2)
+        details["ai_summary"] = analysis["summary"]
+        details["ai_model"] = analysis["model"]
     await upsert_incident(
         ctx.db,
         source_plugin="block_radar",
@@ -170,13 +188,7 @@ async def _publish_incident(ctx, row: dict, base: dict) -> None:
         kind="node_transport_dip",
         severity="high" if drop_percent >= 70 else "medium",
         title=f"Просадка {row['node_name']} · {row['transport']}",
-        details={
-            "node_name": row["node_name"],
-            "provider_name": row["provider_name"],
-            "online": online,
-            "baseline_online": round(baseline_online, 1),
-            "drop_percent": drop_percent,
-        },
+        details=details,
         node_uuid=row["node_uuid"],
         transport=row["transport"],
     )
