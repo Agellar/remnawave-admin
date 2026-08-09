@@ -171,6 +171,33 @@ export default function SettingsPage() {
         </label>
         <label className="flex items-center justify-between gap-4">
           <span className="text-sm text-dark-100">
+            {t('plugins.retention_radar.settings.require_fresh_data')}
+          </span>
+          <input
+            type="checkbox"
+            checked={safetyDraft.require_fresh_data !== false}
+            onChange={(e) =>
+              setSafetyDraft({ ...safetyDraft, require_fresh_data: e.target.checked })
+            }
+          />
+        </label>
+        <label className="flex items-center justify-between gap-4">
+          <span className="text-sm text-dark-100">
+            {t('plugins.retention_radar.settings.max_data_age')}
+          </span>
+          <input
+            type="number"
+            min={5}
+            max={120}
+            value={safetyDraft.max_data_age_minutes ?? 10}
+            onChange={(e) =>
+              setSafetyDraft({ ...safetyDraft, max_data_age_minutes: Number(e.target.value) })
+            }
+            className="w-28 rounded border border-[var(--glass-border)] bg-[var(--glass-bg)] px-2.5 py-1.5 text-sm text-white"
+          />
+        </label>
+        <label className="flex items-center justify-between gap-4">
+          <span className="text-sm text-dark-100">
             {t('plugins.retention_radar.settings.suppress_incidents', {
               defaultValue: 'Исключать пользователей при активных инцидентах',
             })}

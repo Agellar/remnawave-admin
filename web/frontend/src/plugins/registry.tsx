@@ -40,6 +40,9 @@ export const PLUGIN_ROUTES: Record<string, PluginRoute[]> = {
     { path: '/plugins/block-radar', Component: lazy(() => import('./block-radar/RadarPage')) },
     { path: '/plugins/block-radar/settings', Component: lazy(() => import('./block-radar/SettingsPage')) },
   ],
+  incident_center: [
+    { path: '/plugins/incident-center', Component: lazy(() => import('./incident-center/IncidentCenterPage')) },
+  ],
 }
 
 export type { PluginRoute }

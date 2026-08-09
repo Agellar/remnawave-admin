@@ -49,6 +49,7 @@ class OverviewResponse(BaseModel):
     # С какого дня копится история срезов — фронт по ней понимает,
     # можно ли верить графику.
     history_since: Optional[date] = None
+    data_freshness: Dict[str, object] = Field(default_factory=dict)
 
 
 class SegmentResponse(BaseModel):
@@ -182,6 +183,8 @@ class CampaignSafetySettings(BaseModel):
     arm_ttl_minutes: int = 10
     suppress_active_incidents: bool = True
     incident_lookback_minutes: int = 60
+    require_fresh_data: bool = True
+    max_data_age_minutes: int = 10
 
 
 class CampaignSafetyPatch(BaseModel):
@@ -190,3 +193,5 @@ class CampaignSafetyPatch(BaseModel):
     arm_ttl_minutes: Optional[int] = None
     suppress_active_incidents: Optional[bool] = None
     incident_lookback_minutes: Optional[int] = None
+    require_fresh_data: Optional[bool] = None
+    max_data_age_minutes: Optional[int] = None

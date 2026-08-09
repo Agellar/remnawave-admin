@@ -232,6 +232,7 @@ async def test_ai_call_uses_sonnet_tool_and_sanitized_context(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_qcode_usage_is_read_only_and_strictly_allowlisted(monkeypatch):
+    qcode._reset_cache()
     captured = []
 
     class Response:
@@ -264,7 +265,7 @@ async def test_qcode_usage_is_read_only_and_strictly_allowlisted(monkeypatch):
             return Response({"ok": True, "data": {"keys": [{
                 "name": "trial",
                 "is_active": True,
-                "expires_at": "2026-09-04",
+                "expires_at": "2099-09-04",
                 "current_requests": 23,
                 "current_tokens": 40796,
                 "formatted_current_cost": "$0.16",
@@ -278,6 +279,7 @@ async def test_qcode_usage_is_read_only_and_strictly_allowlisted(monkeypatch):
     assert result["ok"] is True
     assert result["account"]["active_api_keys"] == 1
     assert result["keys"][0]["current_requests"] == 23
+    assert result["keys"][0]["expiry_warning"] == "ok"
     assert "secret" not in result["account"]
     assert "api_key" not in result["keys"][0]
     assert [url.rsplit("/", 1)[-1] for url, _ in captured] == ["me", "keys"]
@@ -285,3 +287,7 @@ async def test_qcode_usage_is_read_only_and_strictly_allowlisted(monkeypatch):
         headers["Authorization"] == "Bearer qot_test_secret"
         for _, headers in captured
     )
+    cached = await qcode.usage_status()
+    assert cached == result
+    assert len(captured) == 2
+    qcode._reset_cache()

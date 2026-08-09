@@ -115,6 +115,8 @@ export interface QCodeUsageKey {
   is_active: boolean
   expires_at?: string | null
   expires_at_display?: string | null
+  expires_in_days?: number | null
+  expiry_warning: 'ok' | 'warning' | 'critical' | 'expired' | 'unknown'
   current_daily_cost?: number | null
   formatted_current_cost?: string | null
   current_requests: number
@@ -145,6 +147,8 @@ export interface QCodeUsageStatus {
     last_updated?: string | null
   } | null
   keys: QCodeUsageKey[]
+  fetched_at?: string | null
+  cache_ttl_seconds?: number | null
 }
 
 export interface RadarAlerts {

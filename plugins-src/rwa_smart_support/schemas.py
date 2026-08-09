@@ -99,7 +99,7 @@ class ClientSection(BaseModel):
     is_outdated: Optional[bool] = None
     days_since_last_request: Optional[int] = None
     # Синк истории запросов подписки встал: показываем дату, но не делаем
-    # из неё выводов — см. SOURCE_STALE_AFTER_HOURS в data.py.
+    # из неё выводов — см. SOURCE_STALE_AFTER_MINUTES в data.py.
     source_stale: bool = False
     source_newest_at: Optional[datetime] = None
 

@@ -21,6 +21,8 @@ DEFAULT_SAFETY = {
     "arm_ttl_minutes": 10,
     "suppress_active_incidents": True,
     "incident_lookback_minutes": 60,
+    "require_fresh_data": True,
+    "max_data_age_minutes": 10,
 }
 
 # Имена совпадают с i18n-ключами панели
@@ -124,6 +126,8 @@ async def get_safety(settings) -> Dict[str, object]:
         "incident_lookback_minutes": max(
             5, min(24 * 60, int(values["incident_lookback_minutes"]))
         ),
+        "require_fresh_data": bool(values["require_fresh_data"]),
+        "max_data_age_minutes": max(5, min(120, int(values["max_data_age_minutes"]))),
     }
 
 
@@ -140,6 +144,8 @@ async def patch_safety(settings, patch: Dict[str, object]) -> Dict[str, object]:
         "incident_lookback_minutes": max(
             5, min(24 * 60, int(current["incident_lookback_minutes"]))
         ),
+        "require_fresh_data": bool(current["require_fresh_data"]),
+        "max_data_age_minutes": max(5, min(120, int(current["max_data_age_minutes"]))),
     }
     await settings.set(KEY_SAFETY, resolved)
     return resolved

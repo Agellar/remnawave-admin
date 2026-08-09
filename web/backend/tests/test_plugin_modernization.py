@@ -1,11 +1,15 @@
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
 
 from rwa_incident_hub import store as incident_store
+from rwa_incident_hub import freshness as incident_freshness
+from rwa_incident_hub.plugin import manifest as incident_manifest
 from rwa_local_block_radar import engine as radar_engine
 from rwa_retention_radar import campaigns, settings as retention_settings, store as retention_store
 from rwa_smart_support import store as support_store
+from rwa_smart_support import data as support_data
 
 
 class FakeSettings:
@@ -25,6 +29,8 @@ async def test_live_campaigns_are_server_disabled_by_default():
     assert resolved["live_campaigns_enabled"] is False
     assert resolved["require_server_arm"] is True
     assert resolved["suppress_active_incidents"] is True
+    assert resolved["require_fresh_data"] is True
+    assert resolved["max_data_age_minutes"] == 10
 
 
 @pytest.mark.asyncio
@@ -109,6 +115,57 @@ def test_incident_hub_is_infrastructure_only():
     assert "user_uuid" not in incident_store.DDL
     assert "ip_address" not in incident_store.DDL
     assert "telegram_id" not in incident_store.DDL
+    assert "plugin_incident_workflow" in incident_store.DDL
+    assert "plugin_incident_events" in incident_store.DDL
+
+
+def test_incident_center_manifest_is_free_and_operator_facing():
+    item = incident_manifest()
+    assert item.id == "incident_center"
+    assert item.billing == "free"
+    assert item.navigation[0].path == "/plugins/incident-center"
+
+
+@pytest.mark.asyncio
+async def test_freshness_circuit_breaker_marks_old_history_stale():
+    db = AsyncMock()
+    db.fetchval.return_value = "subscription_request_history"
+    db.fetchrow.return_value = {
+        "newest_at": object(),
+        "age_seconds": 901,
+    }
+    result = await incident_freshness.history_status(db, max_age_minutes=10)
+    assert result["fresh"] is False
+    assert result["state"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_incident_review_writes_an_audit_event():
+    db = AsyncMock()
+    db.fetchval.return_value = 1
+    db.fetchrow.return_value = {
+        "incident_id": 7,
+        "review_label": "false_positive",
+    }
+    result = await incident_store.review(
+        db,
+        incident_id=7,
+        label="false_positive",
+        note="operator review",
+        actor="admin",
+    )
+    assert result["review_label"] == "false_positive"
+    event_sql = db.execute.await_args.args[0]
+    assert "plugin_incident_events" in event_sql
+
+
+@pytest.mark.asyncio
+async def test_smart_support_marks_subscription_source_stale_after_ten_minutes():
+    db = AsyncMock()
+    db.fetch.return_value = []
+    db.fetchval.return_value = datetime.now(timezone.utc) - timedelta(minutes=11)
+    result = await support_data.client_section(db, "user", {})
+    assert result["source_stale"] is True
 
 
 @pytest.mark.asyncio

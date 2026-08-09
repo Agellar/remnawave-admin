@@ -42,6 +42,13 @@ export interface OverviewResponse {
   segments: SegmentCard[]
   attention: SegmentUser[]
   history_since?: string | null
+  data_freshness: {
+    fresh: boolean
+    state: string
+    newest_at?: string | null
+    age_seconds?: number | null
+    max_age_minutes: number
+  }
 }
 
 export interface SegmentResponse {
@@ -93,6 +100,8 @@ export interface CampaignSafetySettings {
   arm_ttl_minutes: number
   suppress_active_incidents: boolean
   incident_lookback_minutes: number
+  require_fresh_data: boolean
+  max_data_age_minutes: number
 }
 
 export interface CampaignPreview {

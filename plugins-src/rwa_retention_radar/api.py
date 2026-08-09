@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from rwa_incident_hub.freshness import history_status
 
 from . import bedolaga, campaigns, data, settings as settings_mod, store
 from .schemas import (
@@ -65,11 +66,23 @@ def build_router(ctx) -> APIRouter:
             raise HTTPException(status_code=404, detail="unknown_segment")
         return key
 
+    async def _require_fresh(safety: dict[str, Any]) -> dict[str, Any]:
+        status = await history_status(
+            db, int(safety.get("max_data_age_minutes") or 10)
+        )
+        if safety.get("require_fresh_data", True) and not status["fresh"]:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "data_stale", "freshness": status},
+            )
+        return status
+
     # ── дашборд ──────────────────────────────────────────────────
 
     @router.get("/overview", response_model=OverviewResponse)
     async def overview(_: Any = Depends(can_view)) -> OverviewResponse:
         th = await settings_mod.get_thresholds(ctx.settings)
+        safety = await settings_mod.get_safety(ctx.settings)
         counts = await data.counts(db, th)
         totals = await data.totals(db)
         trend_days = int(th["trend_days"])
@@ -94,6 +107,9 @@ def build_router(ctx) -> APIRouter:
             segments=cards,
             attention=[SegmentUser(**u) for u in await data.attention(db, th)],
             history_since=await store.first_day(db),
+            data_freshness=await history_status(
+                db, int(safety["max_data_age_minutes"])
+            ),
         )
 
     # ── сегмент ──────────────────────────────────────────────────
@@ -161,6 +177,7 @@ def build_router(ctx) -> APIRouter:
         _check_segment(body.segment)
         th = await settings_mod.get_thresholds(ctx.settings)
         safety = await settings_mod.get_safety(ctx.settings)
+        await _require_fresh(safety)
         result = await campaigns.preview(
             db, ctx, body.segment, th, body.message_text, safety=safety
         )
@@ -172,6 +189,7 @@ def build_router(ctx) -> APIRouter:
         body: CampaignArmIn, admin: Any = Depends(can_campaign)
     ) -> CampaignArmOut:
         safety = await settings_mod.get_safety(ctx.settings)
+        await _require_fresh(safety)
         if not safety["live_campaigns_enabled"]:
             raise HTTPException(status_code=409, detail="live_campaigns_disabled")
         result = await campaigns.arm(
@@ -189,6 +207,7 @@ def build_router(ctx) -> APIRouter:
         _check_segment(body.segment)
         th = await settings_mod.get_thresholds(ctx.settings)
         safety = await settings_mod.get_safety(ctx.settings)
+        await _require_fresh(safety)
         cfg = settings_mod.get_bedolaga_config()
         if not body.dry_run and not cfg.get("token"):
             raise HTTPException(status_code=503, detail="bedolaga_not_configured")

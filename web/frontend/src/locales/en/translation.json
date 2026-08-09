@@ -5668,6 +5668,31 @@
       "expired_title": "License expired",
       "expired_body": "Renew your subscription to get the plugin working again."
     },
+    "incident_center": {
+      "nav": "Incident Center",
+      "title": "Incident Center",
+      "subtitle": "A unified queue for network events, operator workflow and detector-quality reviews.",
+      "active": "Active",
+      "history": "History",
+      "history_source": "Subscription history",
+      "radar_source": "Radar telemetry",
+      "fresh": "data fresh",
+      "stale": "data stale",
+      "quality": "Detector quality",
+      "quality_counts": "reviewed {{reviewed}}, confirmed {{confirmed}}, false {{false_positive}}, unclear {{unclear}}",
+      "empty": "There are no incidents in this queue.",
+      "review": "Review",
+      "workflow": {
+        "acknowledged": "Acknowledge",
+        "investigating": "Investigate",
+        "snoozed": "Snooze for one hour"
+      },
+      "reviews": {
+        "confirmed": "Confirmed",
+        "false_positive": "False positive",
+        "unclear": "Unclear"
+      }
+    },
     "block_radar": {
       "nav": "Block Radar",
       "title": "Block Radar",
@@ -5774,6 +5799,7 @@
         "qcode_requests": "Requests",
         "qcode_tokens": "Tokens",
         "qcode_warning": "QCode reports a limit warning or error",
+        "qcode_expiry_warning": "The key expires in {{days}} days — schedule a rotation.",
         "qcode_read_only": "Data comes from the read-only API. The token and API-key values are never sent to the browser.",
         "fields": {
           "notify_enabled": {
@@ -6128,6 +6154,7 @@
       "next": "Next",
       "pagination": "{{from}}–{{to}} of {{total}}",
       "history_warming": "Daily snapshots have been collected since {{since}}. Trends appear once there are at least two days.",
+      "data_stale": "Data is stale: the source last updated {{age}} minutes ago with a {{limit}} minute limit. Preview and sending are blocked until sync recovers.",
       "segments": {
         "silent": {
           "title": "Quietly gone",
@@ -6170,6 +6197,8 @@
         "safety_saved": "Campaign safety settings saved.",
         "live_campaigns": "Allow live campaigns",
         "suppress_incidents": "Exclude users affected by active incidents",
+        "require_fresh_data": "Block campaigns when data is stale",
+        "max_data_age": "Maximum data age, minutes",
         "arm_ttl": "Server arm lifetime, minutes",
         "save_safety": "Save safety settings",
         "fields": {

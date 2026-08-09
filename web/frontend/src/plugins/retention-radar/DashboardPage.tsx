@@ -81,6 +81,17 @@ export default function DashboardPage() {
         ))}
       </div>
 
+      {!data.data_freshness.fresh && (
+        <div className="glass-card border border-amber-500/30 p-4 text-sm text-amber-200">
+          {t('plugins.retention_radar.data_stale', {
+            age: data.data_freshness.age_seconds == null
+              ? '—'
+              : Math.round(data.data_freshness.age_seconds / 60),
+            limit: data.data_freshness.max_age_minutes,
+          })}
+        </div>
+      )}
+
       {/* Пока история срезов короче двух дней, дельты и спарклайны пустые —
           честнее сказать об этом, чем оставить пользователя гадать. */}
       {data.segments.every((s) => s.trend.length < 2) && (

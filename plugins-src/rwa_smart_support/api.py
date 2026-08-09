@@ -157,6 +157,9 @@ def build_router(ctx) -> APIRouter:
     async def _maybe_analyze(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """ИИ — необязательная надстройка: если он выключен, не настроен,
         исчерпал лимит или упал, отчёт всё равно уходит целиком."""
+        if (payload.get("client") or {}).get("source_stale"):
+            log.warning("ai.skipped_stale_data")
+            return None
         if not await settings_mod.ai_enabled(ctx.settings):
             return None
         cfg = await settings_mod.get_ai_provider(ctx.settings)

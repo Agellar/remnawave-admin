@@ -279,9 +279,12 @@ export default function SettingsPage() {
                       <div><span className="text-dark-400">{t('plugins.block_radar.settings.qcode_requests')}</span><div className="text-white font-mono mt-0.5">{key.current_requests.toLocaleString()}</div></div>
                       <div><span className="text-dark-400">{t('plugins.block_radar.settings.qcode_tokens')}</span><div className="text-white font-mono mt-0.5">{key.current_tokens.toLocaleString()}</div></div>
                     </div>
-                    {(key.is_near_cost_limit || key.is_near_opus_limit || key.has_error) && (
+                    {(key.is_near_cost_limit || key.is_near_opus_limit || key.has_error || ['warning', 'critical', 'expired'].includes(key.expiry_warning)) && (
                       <p className="mt-2 text-[11px] text-amber-300">
-                        {t('plugins.block_radar.settings.qcode_warning')}{key.error_code ? `: ${key.error_code}` : ''}
+                        {['warning', 'critical', 'expired'].includes(key.expiry_warning)
+                          ? t('plugins.block_radar.settings.qcode_expiry_warning', { days: key.expires_in_days ?? '—' })
+                          : t('plugins.block_radar.settings.qcode_warning')}
+                        {key.error_code ? `: ${key.error_code}` : ''}
                       </p>
                     )}
                   </div>

@@ -299,7 +299,7 @@ def _anomalies(stats) -> List[str]:
 # только записи с id больше локального максимума — и замер на месяц.
 # Свежесть проверяем по всей таблице: у живого сервиса запросы идут
 # непрерывно, и тишина дольше порога означает поломку источника.
-SOURCE_STALE_AFTER_HOURS = 6
+SOURCE_STALE_AFTER_MINUTES = 10
 
 
 async def client_section(db, user_uuid: str, latest_versions: Dict[str, str]) -> Dict[str, Any]:
@@ -313,8 +313,8 @@ async def client_section(db, user_uuid: str, latest_versions: Dict[str, str]) ->
         "SELECT max(request_at) FROM subscription_request_history"
     )
     stale = bool(
-        newest_overall
-        and (_now() - newest_overall).total_seconds() > SOURCE_STALE_AFTER_HOURS * 3600
+        newest_overall is None
+        or (_now() - newest_overall).total_seconds() > SOURCE_STALE_AFTER_MINUTES * 60
     )
 
     picked = None
