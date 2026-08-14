@@ -26,7 +26,7 @@ services:
       RWA_DEV_PLUGINS: rwa_smart_support.plugin:manifest,rwa_retention_radar.plugin:manifest,rwa_local_block_radar.plugin:manifest,rwa_incident_hub.plugin:manifest
 
   web-frontend:
-    image: agellar/remnawave-admin-web-frontend:4.4.0-radar06-54e54a31
+    image: agellar/remnawave-admin-web-frontend:4.4.0-reachability-ui-608995c0
     ports: !reset []
 
   # Приватный канал к Bedolaga Bot Web API на 193.53.40.18.
