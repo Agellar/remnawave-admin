@@ -59,14 +59,11 @@ export default function Layout({ children }: LayoutProps) {
   }, [handleKeyDown])
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[var(--glass-bg)] relative">
+    <div className="app-shell flex h-screen overflow-hidden bg-[var(--glass-bg)] relative">
       {/* Mesh gradient background */}
-      <div className="mesh-bg">
+      <div className="mesh-bg mesh-bg--app">
         <div className="mesh-layer mesh-layer--1" />
         <div className="mesh-layer mesh-layer--2" />
-        <div className="mesh-layer mesh-layer--3" />
-        <div className="mesh-layer mesh-layer--4" />
-        <div className="mesh-layer mesh-layer--5" />
       </div>
 
       {/* Sidebar */}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import zlib
 from datetime import datetime, timezone
 from typing import Any
@@ -12,6 +13,19 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from . import ai, qcode, settings as settings_mod, store
 
 RBAC_RESOURCES = {"block_radar": ["view", "settings"]}
+
+
+def _probe_schedule(state: dict) -> dict:
+    next_epoch = state.get("next_probe_at_epoch")
+    return {
+        "probe_running": bool(state.get("probe_running")),
+        "last_probe_at": state.get("last_probe_at"),
+        "next_probe_at": (
+            datetime.fromtimestamp(float(next_epoch), tz=timezone.utc).isoformat()
+            if next_epoch else None
+        ),
+        "probe_interval_seconds": int(state.get("probe_interval_seconds") or 60),
+    }
 
 
 def _local_id(value: str | None) -> int:
@@ -106,6 +120,7 @@ def build_router(ctx, state: dict) -> APIRouter:
             "license_state": "not_required",
             "license_tier": "local",
             "license_paid_until": None,
+            **_probe_schedule(state),
         }
 
     @router.get("/probes")
@@ -119,6 +134,10 @@ def build_router(ctx, state: dict) -> APIRouter:
                     results = json.loads(results)
                 except ValueError:
                     results = []
+            results = [
+                result for result in (results or [])
+                if isinstance(result, dict) and result.get("source") == "globalping"
+            ]
             items.append({
                 "target_uuid": str(row["target_uuid"]),
                 "target_name": row["target_name"],
@@ -128,19 +147,48 @@ def build_router(ctx, state: dict) -> APIRouter:
                 "ru_total": int(row["ru_total"]),
                 "control_success": int(row["control_success"]),
                 "control_total": int(row["control_total"]),
-                "node_success": int(row["node_success"]),
-                "node_total": int(row["node_total"]),
                 "consecutive_failures": int(row["consecutive_failures"]),
                 "incident_open": bool(row["incident_open"]),
                 "sampled_at": row["sampled_at"].isoformat(),
                 "error_code": row["error_code"],
-                "results": results or [],
+                "results": results,
             })
+        cfg = await settings_mod.get(ctx.settings)
         return {
             "configured": bool(os.getenv("GLOBALPING_API_TOKEN", "").strip()),
+            "enabled": bool(cfg["globalping_enabled"]),
             "last_cycle": state.get("last_probe"),
             "items": items,
+            **_probe_schedule(state),
         }
+
+    @router.post("/probes/run")
+    async def run_probe_now(_: Any = Depends(can_settings)) -> dict:
+        cfg = await settings_mod.get(ctx.settings)
+        if not cfg["globalping_enabled"]:
+            raise HTTPException(status_code=409, detail="globalping_disabled")
+        if not os.getenv("GLOBALPING_API_TOKEN", "").strip():
+            raise HTTPException(status_code=409, detail="globalping_token_missing")
+        if state.get("probe_running"):
+            raise HTTPException(status_code=409, detail="probe_already_running")
+        retry_after = max(0, int(float(state.get("manual_cooldown_until") or 0) - time.time()))
+        if retry_after:
+            raise HTTPException(
+                status_code=429,
+                detail={"code": "probe_cooldown", "retry_after": retry_after},
+                headers={"Retry-After": str(retry_after)},
+            )
+        runner = state.get("run_probe")
+        if not callable(runner):
+            raise HTTPException(status_code=503, detail="probe_runner_unavailable")
+        try:
+            result = await runner(manual=True)
+        except RuntimeError as exc:
+            code = str(exc)
+            if code in {"probe_already_running", "globalping_disabled"}:
+                raise HTTPException(status_code=409, detail=code) from exc
+            raise
+        return {"result": result, **_probe_schedule(state)}
 
     @router.get("/alerts")
     async def alerts(

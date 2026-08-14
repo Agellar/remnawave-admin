@@ -569,6 +569,16 @@
   animation: meshFloat2 32s ease-in-out infinite;
 }
 
+/* The operator workspace prioritizes sustained 60 FPS over decorative motion.
+   A moving full-viewport mesh behind many translucent cards forces Chromium to
+   repaint every backdrop-filter surface on every frame. Keep the same color
+   atmosphere, but make the app mesh static and cheap to composite. */
+.mesh-bg--app .mesh-layer {
+  animation: none;
+  will-change: auto;
+  transform: none;
+}
+
 /* Reduce opacity in light mode */
 [data-mode="light"] .mesh-layer {
   opacity: 0.08;
@@ -726,6 +736,31 @@
       0 16px 48px rgba(0, 0, 0, 0.2),
       0 1px 0 0 rgba(255, 255, 255, 0.06) inset,
       0 0 20px -5px rgba(var(--card-rgb), 0.18);
+  }
+
+  /* Operational pages can contain dozens of cards. Removing per-card backdrop
+     blur avoids continuous repaints while the static app mesh remains visible
+     through the existing translucent surface colors. */
+  .app-shell .glass-card {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .app-shell .glass-card::before {
+    transition: none;
+  }
+
+  .app-shell .glass-card:hover {
+    transform: none;
+    box-shadow:
+      0 10px 32px rgba(0, 0, 0, 0.18),
+      0 1px 0 0 rgba(255, 255, 255, 0.05) inset;
+  }
+
+  .radar-deferred {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 360px;
   }
 
   /* Touch press feedback: explicit scale on :active for tap feedback on mobile.

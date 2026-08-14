@@ -182,7 +182,7 @@ export default function SettingsPage() {
             </p>
           </div>
         </div>
-        {(['globalping_enabled', 'node_probe_enabled'] as const).map((key) => (
+        {(['globalping_enabled'] as const).map((key) => (
           <div key={key} className="flex items-start gap-3">
             <Switch
               id={key}
@@ -200,12 +200,11 @@ export default function SettingsPage() {
             </div>
           </div>
         ))}
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {([
             ['probe_interval_seconds', 60, 3600],
             ['probe_confirm_cycles', 2, 6],
             ['probe_min_ru_results', 2, 5],
-            ['node_probe_vantages', 1, 5],
             ['probe_timeout_seconds', 3, 15],
           ] as const).map(([key, min, max]) => (
             <div key={key} className="space-y-1.5">

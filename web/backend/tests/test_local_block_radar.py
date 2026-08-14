@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 from rwa_local_block_radar import ai, engine, qcode, settings, store
-from rwa_local_block_radar.api import _alert, _local_id
+from rwa_local_block_radar.api import _alert, _local_id, _probe_schedule
 from rwa_local_block_radar.plugin import manifest
 
 
@@ -42,6 +42,8 @@ def test_thresholds_are_clamped_to_safe_ranges():
     assert result["dip_history_days"] == 30
     assert result["online_window_minutes"] == 1
     assert result["notify_enabled"] is False
+    assert "node_probe_enabled" not in result
+    assert "node_probe_vantages" not in result
 
 
 def test_node_dip_requires_both_share_and_absolute_drop():
@@ -62,7 +64,23 @@ def test_manifest_uses_builtin_block_radar_ui_without_license():
     item = manifest()
     assert item.id == "block_radar"
     assert item.billing == "free"
+    assert item.version == "0.6.0"
     assert item.navigation[0].path == "/plugins/block-radar"
+    assert {task.name for task in item.build(type("Ctx", (), {})()).scheduled_tasks} == {
+        "local-radar", "globalping"
+    }
+
+
+def test_probe_schedule_is_safe_for_api_output():
+    item = _probe_schedule({
+        "probe_running": True,
+        "last_probe_at": "2026-08-14T08:00:00+00:00",
+        "next_probe_at_epoch": 1_786_344_060,
+        "probe_interval_seconds": 60,
+    })
+    assert item["probe_running"] is True
+    assert item["next_probe_at"].endswith("+00:00")
+    assert item["probe_interval_seconds"] == 60
 
 
 def test_schema_prevents_duplicate_open_incidents():

@@ -1,8 +1,8 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, CheckCircle, Globe2, Loader2, Network, Server, Settings, ShieldBan, Sparkles, Zap } from '@/components/brand/icons'
+import { Activity, CheckCircle, Clock, Globe2, Loader2, Network, RefreshCw, Server, Settings, ShieldBan, Sparkles, Zap } from '@/components/brand/icons'
 import { toast } from 'sonner'
 
 import LicenseBanner from '@/components/plugins/license'
@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 
 import DataList from './DataList'
 
-import { analyzeAlert, asLicenseError, fetchAlerts, fetchHosters, fetchOverview, fetchProbes, fetchStatus } from './api'
+import { analyzeAlert, asLicenseError, fetchAlerts, fetchHosters, fetchOverview, fetchProbes, fetchStatus, runProbeNow } from './api'
 import type {
   RadarAlert,
   RadarNodeDip,
@@ -179,7 +179,7 @@ export default function RadarPage() {
       )}
 
       {!licenseError && (history.data?.items.length ?? 0) > 0 && (
-        <section className="space-y-3">
+        <section className="radar-deferred space-y-3">
           <h2 className="text-sm font-semibold text-white uppercase tracking-wider">
             {t('plugins.block_radar.history_title')}
           </h2>
@@ -250,7 +250,7 @@ function HosterRating() {
   const items = data?.hosters ?? []
 
   return (
-    <section className="space-y-3">
+    <section className="radar-deferred space-y-3">
       <h2 className="text-sm font-semibold text-white uppercase tracking-wider flex items-center gap-2">
         <Server className="w-4 h-4 text-sky-400" aria-hidden />
         {t('plugins.block_radar.hosters_title')}
@@ -339,10 +339,24 @@ const PROBE_STATE_CLASS: Record<RadarProbeState, string> = {
 
 function ReachabilityPanel({ data, loading }: { data: RadarProbes | null; loading: boolean }) {
   const { t } = useTranslation()
+  const qc = useQueryClient()
+  const runNow = useMutation({
+    mutationFn: runProbeNow,
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['block-radar-probes'] }),
+        qc.invalidateQueries({ queryKey: ['block-radar-status'] }),
+      ])
+      toast.success(t('plugins.block_radar.reachability.manual_done'))
+    },
+    onError: () => toast.error(t('plugins.block_radar.reachability.manual_error')),
+  })
+  const running = runNow.isPending || Boolean(data?.probe_running)
+  const manualDisabled = running || !data?.configured || !data?.enabled
 
   return (
-    <section className="space-y-3" aria-live="polite">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-start gap-2">
           <Globe2 className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" aria-hidden />
           <div>
@@ -354,13 +368,31 @@ function ReachabilityPanel({ data, loading }: { data: RadarProbes | null; loadin
             </p>
           </div>
         </div>
-        <span className={`rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wider ${
-          data?.configured ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'
-        }`}>
-          {t(data?.configured
-            ? 'plugins.block_radar.reachability.configured'
-            : 'plugins.block_radar.reachability.not_configured')}
-        </span>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <ProbeCountdown
+            enabled={Boolean(data?.enabled)}
+            running={running}
+            nextProbeAt={data?.next_probe_at}
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={manualDisabled}
+            onClick={() => runNow.mutate()}
+          >
+            <RefreshCw className={`mr-2 h-3.5 w-3.5 ${running ? 'animate-spin' : ''}`} aria-hidden />
+            {t(running
+              ? 'plugins.block_radar.reachability.manual_running'
+              : 'plugins.block_radar.reachability.manual_run')}
+          </Button>
+          <span className={`rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wider ${
+            data?.configured ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'
+          }`}>
+            {t(data?.configured
+              ? 'plugins.block_radar.reachability.configured'
+              : 'plugins.block_radar.reachability.not_configured')}
+          </span>
+        </div>
       </div>
 
       <div className="glass-card overflow-hidden">
@@ -380,7 +412,7 @@ function ReachabilityPanel({ data, loading }: { data: RadarProbes | null; loadin
         )}
         {(data?.items ?? []).map((target) => (
           <div key={target.target_uuid} className="border-b border-white/5 p-4 last:border-b-0 sm:p-5">
-            <div className="grid gap-3 sm:grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(5.5rem,.55fr))_auto] sm:items-center">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1.4fr)_repeat(2,minmax(5.5rem,.55fr))_auto] sm:items-center">
               <div className="min-w-0">
                 <div className="truncate text-sm font-medium text-white">{target.target_name}</div>
                 <div className="mt-0.5 text-[11px] text-dark-400">
@@ -388,7 +420,6 @@ function ReachabilityPanel({ data, loading }: { data: RadarProbes | null; loadin
                 </div>
               </div>
               <ProbeMetric label={t('plugins.block_radar.reachability.ru')} value={`${target.ru_success}/${target.ru_total}`} />
-              <ProbeMetric label={t('plugins.block_radar.reachability.nodes')} value={`${target.node_success}/${target.node_total}`} />
               <ProbeMetric label={t('plugins.block_radar.reachability.controls')} value={`${target.control_success}/${target.control_total}`} />
               <span className={`w-fit rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wider ${PROBE_STATE_CLASS[target.state]}`}>
                 {t(`plugins.block_radar.reachability.states.${target.state}`)}
@@ -417,6 +448,47 @@ function ReachabilityPanel({ data, loading }: { data: RadarProbes | null; loadin
         {t('plugins.block_radar.reachability.privacy')}
       </p>
     </section>
+  )
+}
+
+function ProbeCountdown({
+  enabled,
+  running,
+  nextProbeAt,
+}: {
+  enabled: boolean
+  running: boolean
+  nextProbeAt?: string | null
+}) {
+  const { t } = useTranslation()
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!enabled || running || !nextProbeAt) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [enabled, running, nextProbeAt])
+
+  let value = t('plugins.block_radar.reachability.timer_paused')
+  if (running) {
+    value = t('plugins.block_radar.reachability.timer_running')
+  } else if (enabled && nextProbeAt) {
+    const target = new Date(nextProbeAt).getTime()
+    const seconds = Number.isFinite(target) ? Math.max(0, Math.ceil((target - now) / 1_000)) : 0
+    const minutes = Math.floor(seconds / 60)
+    value = t('plugins.block_radar.reachability.timer_next', {
+      value: `${minutes}:${String(seconds % 60).padStart(2, '0')}`,
+    })
+  }
+
+  return (
+    <div
+      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-white/[0.04] px-2.5 text-xs tabular-nums text-dark-200"
+      aria-live="off"
+    >
+      <Clock className="h-3.5 w-3.5 text-cyan-300" aria-hidden />
+      <span>{value}</span>
+    </div>
   )
 }
 
@@ -755,7 +827,7 @@ function OverviewCards({ data }: { data: RadarOverview | null }) {
 function SitesTable({ sites }: { sites: RadarSite[] }) {
   const { t } = useTranslation()
   return (
-    <section className="space-y-3">
+    <section className="radar-deferred space-y-3">
       <h2 className="text-sm font-semibold text-white uppercase tracking-wider flex items-center gap-2">
         <Server className="w-4 h-4 text-emerald-400" aria-hidden />
         {t('plugins.block_radar.sites_title')}
@@ -814,7 +886,7 @@ function NetworkPulse({ pulse }: { pulse: RadarOverview['pulse'] }) {
   const top = pulse.hosters_top
 
   return (
-    <section className="space-y-3">
+    <section className="radar-deferred space-y-3">
       <h2 className="text-sm font-semibold text-white uppercase tracking-wider flex items-center gap-2">
         <Zap className="w-4 h-4 text-emerald-400" aria-hidden />
         {t('plugins.block_radar.pulse_title', { days: pulse.days })}

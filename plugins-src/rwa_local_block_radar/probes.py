@@ -6,7 +6,6 @@ import ipaddress
 import math
 import os
 import time
-import uuid
 from typing import Any
 
 import httpx
@@ -150,63 +149,6 @@ async def globalping_check(target: dict, timeout: int) -> tuple[list[dict], str 
         return [], None, "globalping_unavailable"
 
 
-async def _one_node_check(node: dict, target: dict, timeout: int) -> dict:
-    from web.backend.core.agent_hmac import sign_command_with_ts
-    from web.backend.core.agent_manager import agent_manager
-
-    request_id = str(uuid.uuid4())
-    command = {
-        "type": "connectivity_probe", "request_id": request_id,
-        "target": target["address"], "port": target["port"], "timeout": timeout,
-    }
-    payload, signature = sign_command_with_ts(command, str(node["agent_token"]))
-    payload["_sig"] = signature
-    try:
-        response = await agent_manager.request_command(
-            str(node["uuid"]), payload, request_id=request_id, timeout=timeout + 3,
-        )
-        return {
-            "source": "node", "vantage_label": str(node["name"]),
-            "country": None, "asn": None, "network": None,
-            "success": bool(response.get("ok")),
-            "latency_ms": response.get("latency_ms"),
-            "error_code": response.get("error_code"),
-        }
-    except asyncio.TimeoutError:
-        error = "agent_timeout"
-    except (ConnectionError, ValueError):
-        error = "agent_unavailable"
-    return {
-        "source": "node", "vantage_label": str(node["name"]),
-        "country": None, "asn": None, "network": None,
-        "success": False, "latency_ms": None, "error_code": error,
-    }
-
-
-async def node_checks(db, target: dict, *, limit: int, timeout: int) -> list[dict]:
-    from web.backend.core.agent_manager import agent_manager
-
-    connected = set(agent_manager.list_connected())
-    rows = await db.fetch(
-        """SELECT uuid::text AS uuid,name,agent_token FROM nodes
-           WHERE NOT COALESCE(is_disabled,false) AND agent_token IS NOT NULL
-           ORDER BY name"""
-    )
-    candidates = [dict(row) for row in rows if str(row["uuid"]) in connected]
-    remote = [row for row in candidates if str(row["uuid"]) not in target["linked_nodes"]]
-    linked = [row for row in candidates if str(row["uuid"]) in target["linked_nodes"]]
-    eligible = remote + linked
-    if eligible:
-        offset = int(uuid.UUID(target["uuid"])) % len(eligible)
-        eligible = eligible[offset:] + eligible[:offset]
-    selected = eligible[:limit]
-    if not selected:
-        return []
-    return list(await asyncio.gather(*[
-        _one_node_check(node, target, timeout) for node in selected
-    ]))
-
-
 def summarize(results: list[dict], previous: dict | None, cfg: dict, error_code: str | None) -> dict:
     gp = [row for row in results if row["source"] == "globalping"]
     ru = [
@@ -214,24 +156,19 @@ def summarize(results: list[dict], previous: dict | None, cfg: dict, error_code:
         and "eyeball-network" in (row.get("tags") or [])
     ]
     controls = [row for row in gp if row not in ru]
-    own = [row for row in results if row["source"] == "node"]
     ru_success = sum(bool(row["success"]) for row in ru)
     control_success = sum(bool(row["success"]) for row in controls)
-    node_success = sum(bool(row["success"]) for row in own)
     enough_ru = len(ru) >= int(cfg["probe_min_ru_results"])
     ru_ok = enough_ru and ru_success >= math.ceil(len(ru) / 2)
-    node_ok = bool(own) and node_success >= math.ceil(len(own) / 2)
 
-    if ru_ok and (not own or node_ok):
+    if ru_ok:
         state = "healthy"
     elif not enough_ru:
         state = "insufficient"
-    elif not ru_ok and len(own) >= 2 and not node_ok:
-        state = "endpoint_down"
-    elif not ru_ok and (node_ok or control_success > 0):
+    elif control_success > 0:
         state = "regional_suspect"
     else:
-        state = "degraded"
+        state = "endpoint_down"
 
     previous_failures = int(previous.get("consecutive_failures") or 0) if previous else 0
     consecutive = previous_failures + 1 if state in FAILURE_STATES else 0
@@ -239,7 +176,8 @@ def summarize(results: list[dict], previous: dict | None, cfg: dict, error_code:
     return {
         "state": state, "ru_success": ru_success, "ru_total": len(ru),
         "control_success": control_success, "control_total": len(controls),
-        "node_success": node_success, "node_total": len(own),
+        # Kept as zeroes for the existing storage schema and historical rows.
+        "node_success": 0, "node_total": 0,
         "consecutive_failures": consecutive,
         "incident_open": (
             consecutive >= int(cfg["probe_confirm_cycles"])
@@ -263,13 +201,7 @@ async def run_cycle(ctx, state: dict, cfg: dict) -> dict:
         gp_results, measurement_id, error_code = await globalping_check(
             target, int(cfg["probe_timeout_seconds"])
         )
-    own_results = []
-    if cfg["node_probe_enabled"]:
-        own_results = await node_checks(
-            ctx.db, target, limit=int(cfg["node_probe_vantages"]),
-            timeout=int(cfg["probe_timeout_seconds"]),
-        )
-    results = gp_results + own_results
+    results = gp_results
     previous = await store.previous_probe_cycle(ctx.db, target["uuid"])
     summary = summarize(results, previous, cfg, error_code)
     summary["measurement_id"] = measurement_id
@@ -288,8 +220,10 @@ async def run_cycle(ctx, state: dict, cfg: dict) -> dict:
             details={
                 "target_name": target["name"], "target_port": target["port"],
                 "state": summary["state"], "ru_success": summary["ru_success"],
-                "ru_total": summary["ru_total"], "node_success": summary["node_success"],
-                "node_total": summary["node_total"], "confirmed_cycles": summary["consecutive_failures"],
+                "ru_total": summary["ru_total"],
+                "control_success": summary["control_success"],
+                "control_total": summary["control_total"],
+                "confirmed_cycles": summary["consecutive_failures"],
             },
             node_uuid=next(iter(target["linked_nodes"]), None) if len(target["linked_nodes"]) == 1 else None,
             transport="tcp",
@@ -300,6 +234,6 @@ async def run_cycle(ctx, state: dict, cfg: dict) -> dict:
     return {
         "ok": True, "target_name": target["name"], "state": summary["state"],
         "targets": len(targets), "ru": f"{summary['ru_success']}/{summary['ru_total']}",
-        "nodes": f"{summary['node_success']}/{summary['node_total']}",
+        "controls": f"{summary['control_success']}/{summary['control_total']}",
         "incident_open": confirmed, "error": error_code,
     }

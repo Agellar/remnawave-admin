@@ -18,15 +18,15 @@ def result(source, success, *, country=None, tags=None):
     }
 
 
-def test_ru_quorum_and_nodes_healthy():
+def test_ru_quorum_is_healthy_without_node_probes():
     rows = [
         result("globalping", True, country="RU", tags=["eyeball-network"]),
         result("globalping", True, country="RU", tags=["eyeball-network"]),
         result("globalping", False, country="RU", tags=["eyeball-network"]),
-        result("node", True), result("node", True), result("node", False),
     ]
     summary = summarize(rows, None, CFG, None)
     assert summary["state"] == "healthy"
+    assert summary["node_total"] == 0
     assert summary["incident_open"] is False
 
 
@@ -35,7 +35,6 @@ def test_regional_failure_requires_repeated_confirmation():
         result("globalping", False, country="RU", tags=["eyeball-network"]),
         result("globalping", False, country="RU", tags=["eyeball-network"]),
         result("globalping", True, country="DE", tags=["datacenter-network"]),
-        result("node", True), result("node", True), result("node", False),
     ]
     first = summarize(rows, None, CFG, None)
     assert first["state"] == "regional_suspect"
@@ -47,11 +46,21 @@ def test_regional_failure_requires_repeated_confirmation():
 def test_too_few_ru_probes_never_opens_incident():
     rows = [
         result("globalping", False, country="RU", tags=["eyeball-network"]),
-        result("node", False), result("node", False), result("node", False),
     ]
     summary = summarize(rows, {"consecutive_failures": 5}, CFG, None)
     assert summary["state"] == "insufficient"
     assert summary["consecutive_failures"] == 0
+
+
+def test_ru_and_control_failure_marks_endpoint_down():
+    rows = [
+        result("globalping", False, country="RU", tags=["eyeball-network"]),
+        result("globalping", False, country="RU", tags=["eyeball-network"]),
+        result("globalping", False, country="DE", tags=["datacenter-network"]),
+    ]
+    summary = summarize(rows, None, CFG, None)
+    assert summary["state"] == "endpoint_down"
+    assert summary["incident_open"] is False
 
 
 def test_major_live_ru_providers_are_selected():

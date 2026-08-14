@@ -42,6 +42,10 @@ export interface RadarStatus {
   last_tick: RadarTick | null
   last_probe?: RadarProbeCycleStatus | null
   globalping_configured?: boolean
+  probe_running?: boolean
+  last_probe_at?: string | null
+  next_probe_at?: string | null
+  probe_interval_seconds?: number
   open_alerts: number
   license_usable: boolean
   open_dips: RadarNodeDip[]
@@ -87,7 +91,7 @@ export interface RadarProbeCycleStatus {
   state?: RadarProbeState
   targets?: number
   ru?: string
-  nodes?: string
+  controls?: string
   incident_open?: boolean
   error?: string | null
 }
@@ -100,7 +104,7 @@ export type RadarProbeState =
   | 'insufficient'
 
 export interface RadarProbeResult {
-  source: 'globalping' | 'node'
+  source: 'globalping'
   vantage_label: string
   country?: string | null
   asn?: number | null
@@ -119,8 +123,6 @@ export interface RadarProbeTarget {
   ru_total: number
   control_success: number
   control_total: number
-  node_success: number
-  node_total: number
   consecutive_failures: number
   incident_open: boolean
   sampled_at: string
@@ -130,8 +132,21 @@ export interface RadarProbeTarget {
 
 export interface RadarProbes {
   configured: boolean
+  enabled: boolean
+  probe_running: boolean
+  last_probe_at?: string | null
+  next_probe_at?: string | null
+  probe_interval_seconds: number
   last_cycle?: RadarProbeCycleStatus | null
   items: RadarProbeTarget[]
+}
+
+export interface RadarProbeRunResult {
+  result: RadarProbeCycleStatus
+  probe_running: boolean
+  last_probe_at?: string | null
+  next_probe_at?: string | null
+  probe_interval_seconds: number
 }
 
 export type RadarAIClassification =
@@ -226,11 +241,9 @@ export interface RadarSettings {
   dip_confirm_ticks: number
   dip_history_days: number
   globalping_enabled: boolean
-  node_probe_enabled: boolean
   probe_interval_seconds: number
   probe_confirm_cycles: number
   probe_min_ru_results: number
-  node_probe_vantages: number
   probe_timeout_seconds: number
   ai_enabled: boolean
   ai_auto_analyze: boolean

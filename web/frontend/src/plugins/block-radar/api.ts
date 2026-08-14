@@ -11,6 +11,7 @@ import type {
   RadarAIStatus,
   RadarHosters,
   RadarOverview,
+  RadarProbeRunResult,
   RadarProbes,
   RadarSettings,
   RadarSettingsPatch,
@@ -55,6 +56,11 @@ export async function fetchOverview(): Promise<RadarOverview> {
 
 export async function fetchProbes(): Promise<RadarProbes> {
   const { data } = await client.get<RadarProbes>(`${BASE}/probes`)
+  return data
+}
+
+export async function runProbeNow(): Promise<RadarProbeRunResult> {
+  const { data } = await client.post<RadarProbeRunResult>(`${BASE}/probes/run`)
   return data
 }
 
