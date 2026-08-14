@@ -51,8 +51,6 @@ def _build(ctx: PluginContext) -> PluginParts:
                 raise RuntimeError("globalping_disabled")
 
             state["probe_running"] = True
-            if manual:
-                state["manual_cooldown_until"] = time.time() + 15
             try:
                 result = await probes.run_cycle(ctx, state, cfg)
                 state["last_probe"] = result
@@ -69,6 +67,8 @@ def _build(ctx: PluginContext) -> PluginParts:
                 ).isoformat()
                 state["probe_interval_seconds"] = interval
                 state["next_probe_at_epoch"] = completed_at + interval
+                if manual:
+                    state["manual_cooldown_until"] = completed_at + 15
                 state["probe_running"] = False
 
     state["run_probe"] = run_probe

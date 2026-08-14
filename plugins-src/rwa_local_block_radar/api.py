@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import zlib
@@ -171,7 +172,10 @@ def build_router(ctx, state: dict) -> APIRouter:
             raise HTTPException(status_code=409, detail="globalping_token_missing")
         if state.get("probe_running"):
             raise HTTPException(status_code=409, detail="probe_already_running")
-        retry_after = max(0, int(float(state.get("manual_cooldown_until") or 0) - time.time()))
+        retry_after = max(
+            0,
+            math.ceil(float(state.get("manual_cooldown_until") or 0) - time.time()),
+        )
         if retry_after:
             raise HTTPException(
                 status_code=429,
