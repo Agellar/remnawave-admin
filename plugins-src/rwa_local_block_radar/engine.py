@@ -146,7 +146,13 @@ async def run_tick(ctx, state: dict) -> None:
     state["last_tick"] = {
         "at": datetime.now(timezone.utc).isoformat(),
         "ok": True,
-        "note": "local-only; no data leaves this panel",
+        "note": (
+            "Globalping receives only configured public endpoint IP and port; "
+            "user traffic and identities stay local"
+            if cfg["globalping_enabled"]
+            else "local node telemetry only"
+        ),
+        "external_monitoring": bool(cfg["globalping_enabled"]),
         "nodes_total": len(rows),
         "links_active": len(rows),
         "cells": len(rows),

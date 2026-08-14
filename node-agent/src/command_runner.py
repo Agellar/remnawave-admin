@@ -7,6 +7,7 @@ Includes HMAC signature verification and forbidden pattern blocking.
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import re
@@ -40,6 +41,7 @@ ALLOWED_COMMAND_TYPES = {
     "pty_resize",
     "service_status",
     "sync_blocked_ips",
+    "connectivity_probe",
     "ping",
 }
 
@@ -138,6 +140,59 @@ class CommandRunner:
             await self._service_status(msg)
         elif msg_type == "sync_blocked_ips":
             await self._sync_blocked_ips(msg)
+        elif msg_type == "connectivity_probe":
+            await self._connectivity_probe(msg)
+
+    async def _connectivity_probe(self, msg: dict) -> None:
+        """Run a strict public-IP TCP connect check without invoking a shell."""
+        request_id = str(msg.get("request_id") or "")
+        target = str(msg.get("target") or "").strip()
+        try:
+            address = ipaddress.ip_address(target)
+            port = int(msg.get("port"))
+            timeout = max(2.0, min(15.0, float(msg.get("timeout", 8))))
+            if not request_id or not address.is_global or not 1 <= port <= 65535:
+                raise ValueError("invalid_target")
+        except (TypeError, ValueError):
+            await self._send({
+                "type": "connectivity_probe_result",
+                "request_id": request_id,
+                "ok": False,
+                "latency_ms": None,
+                "error_code": "invalid_target",
+            })
+            return
+
+        started = time.perf_counter()
+        writer = None
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(str(address), port), timeout=timeout
+            )
+            latency_ms = round((time.perf_counter() - started) * 1000, 1)
+            result = {"ok": True, "latency_ms": latency_ms, "error_code": None}
+        except asyncio.TimeoutError:
+            result = {"ok": False, "latency_ms": None, "error_code": "timeout"}
+        except ConnectionRefusedError:
+            result = {"ok": False, "latency_ms": None, "error_code": "refused"}
+        except OSError:
+            result = {"ok": False, "latency_ms": None, "error_code": "network"}
+        except Exception:
+            logger.warning("Connectivity probe failed unexpectedly", exc_info=True)
+            result = {"ok": False, "latency_ms": None, "error_code": "internal"}
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+        await self._send({
+            "type": "connectivity_probe_result",
+            "request_id": request_id,
+            **result,
+        })
 
     async def _run_shell(self, script: str, timeout: int) -> tuple:
         """Run a shell script (on the HOST via nsenter when host_mode).

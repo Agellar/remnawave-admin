@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Save, Sliders, Sparkles } from '@/components/brand/icons'
+import { ArrowLeft, Globe2, Save, Sliders, Sparkles } from '@/components/brand/icons'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -168,6 +168,71 @@ export default function SettingsPage() {
             {t('plugins.block_radar.settings.fields.online_window_minutes.help')}
           </p>
         </div>
+      </div>
+
+      <div className="glass-card p-5 space-y-5">
+        <div className="flex items-start gap-2">
+          <Globe2 className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" aria-hidden />
+          <div>
+            <h2 className="text-sm font-semibold text-white">
+              {t('plugins.block_radar.reachability.settings_title')}
+            </h2>
+            <p className="mt-1 text-[11px] leading-relaxed text-dark-400">
+              {t('plugins.block_radar.reachability.settings_help')}
+            </p>
+          </div>
+        </div>
+        {(['globalping_enabled', 'node_probe_enabled'] as const).map((key) => (
+          <div key={key} className="flex items-start gap-3">
+            <Switch
+              id={key}
+              checked={draft[key]}
+              disabled={mutation.isPending}
+              onCheckedChange={(value) => setValue(key, value)}
+            />
+            <div>
+              <Label htmlFor={key} className="text-sm text-white">
+                {t(`plugins.block_radar.reachability.fields.${key}.label`)}
+              </Label>
+              <p className="mt-0.5 text-[11px] text-dark-400">
+                {t(`plugins.block_radar.reachability.fields.${key}.help`)}
+              </p>
+            </div>
+          </div>
+        ))}
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          {([
+            ['probe_interval_seconds', 60, 3600],
+            ['probe_confirm_cycles', 2, 6],
+            ['probe_min_ru_results', 2, 5],
+            ['node_probe_vantages', 1, 5],
+            ['probe_timeout_seconds', 3, 15],
+          ] as const).map(([key, min, max]) => (
+            <div key={key} className="space-y-1.5">
+              <Label htmlFor={key} className="text-xs text-dark-300">
+                {t(`plugins.block_radar.reachability.fields.${key}.label`)}
+              </Label>
+              <Input
+                id={key}
+                type="number"
+                min={min}
+                max={max}
+                value={String(draft[key])}
+                onChange={(event) => {
+                  const value = Number(event.target.value)
+                  if (!Number.isNaN(value)) setValue(key, value)
+                }}
+                className="h-9 tabular-nums"
+              />
+              <p className="text-[11px] leading-snug text-dark-400">
+                {t(`plugins.block_radar.reachability.fields.${key}.help`)}
+              </p>
+            </div>
+          ))}
+        </div>
+        <p className="text-[11px] leading-relaxed text-cyan-100/80">
+          {t('plugins.block_radar.reachability.settings_privacy')}
+        </p>
       </div>
 
       <div className="glass-card p-5 space-y-4">

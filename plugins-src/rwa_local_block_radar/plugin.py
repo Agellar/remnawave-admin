@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from web.backend.core.plugin_api import PluginContext
 from web.backend.core.plugins import NavEntry, PluginManifest, PluginParts, ScheduledTask
 from rwa_incident_hub import ensure_schema as ensure_incident_schema
 
-from . import __version__, ai, engine, settings as settings_mod, store
+from . import __version__, ai, engine, probes, settings as settings_mod, store
 from .api import RBAC_RESOURCES, build_router
 
 
@@ -15,6 +16,9 @@ def _build(ctx: PluginContext) -> PluginParts:
     state: dict = {
         "schema_ready": False,
         "last_tick": None,
+        "last_probe": None,
+        "next_probe_at": 0.0,
+        "probe_cursor": 0,
         "new_alert_ids": [],
         "ai_tasks": {},
     }
@@ -49,6 +53,13 @@ def _build(ctx: PluginContext) -> PluginParts:
         try:
             await engine.run_tick(ctx, state)
             cfg = await settings_mod.get(ctx.settings)
+            if time.monotonic() >= float(state["next_probe_at"]):
+                state["next_probe_at"] = time.monotonic() + int(cfg["probe_interval_seconds"])
+                try:
+                    state["last_probe"] = await probes.run_cycle(ctx, state, cfg)
+                except Exception:
+                    state["last_probe"] = {"ok": False, "error": "probe_cycle_failed"}
+                    ctx.logger.warning("local_block_radar.probe_cycle_failed", exc_info=True)
             if cfg["ai_enabled"] and cfg["ai_auto_analyze"]:
                 for alert_id in state.pop("new_alert_ids", []):
                     if alert_id in state["ai_tasks"]:

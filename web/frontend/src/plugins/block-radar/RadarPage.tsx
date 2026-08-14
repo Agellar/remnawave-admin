@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, CheckCircle, Loader2, Server, Settings, ShieldBan, Sparkles, Zap } from '@/components/brand/icons'
+import { Activity, CheckCircle, Globe2, Loader2, Network, Server, Settings, ShieldBan, Sparkles, Zap } from '@/components/brand/icons'
 import { toast } from 'sonner'
 
 import LicenseBanner from '@/components/plugins/license'
@@ -10,11 +10,13 @@ import { Button } from '@/components/ui/button'
 
 import DataList from './DataList'
 
-import { analyzeAlert, asLicenseError, fetchAlerts, fetchHosters, fetchOverview, fetchStatus } from './api'
+import { analyzeAlert, asLicenseError, fetchAlerts, fetchHosters, fetchOverview, fetchProbes, fetchStatus } from './api'
 import type {
   RadarAlert,
   RadarNodeDip,
   RadarOverview,
+  RadarProbes,
+  RadarProbeState,
   RadarSite,
   RadarStatus,
   RadarTick,
@@ -86,6 +88,12 @@ export default function RadarPage() {
     retry: false,
     refetchInterval: 120_000,
   })
+  const probes = useQuery({
+    queryKey: ['block-radar-probes'],
+    queryFn: fetchProbes,
+    retry: false,
+    refetchInterval: 30_000,
+  })
 
   const licenseError = useMemo(
     () => (status.error ? asLicenseError(status.error) : null),
@@ -120,6 +128,10 @@ export default function RadarPage() {
       {!licenseError && <OverviewCards data={overview.data ?? null} />}
 
       {!licenseError && <StatusCard tick={status.data?.last_tick ?? null} />}
+
+      {!licenseError && (
+        <ReachabilityPanel data={probes.data ?? null} loading={probes.isLoading} />
+      )}
 
       {!licenseError && (overview.data?.sites.length ?? 0) > 0 && (
         <SitesTable sites={overview.data!.sites} />
@@ -317,6 +329,106 @@ function HosterRating() {
 }
 
 
+const PROBE_STATE_CLASS: Record<RadarProbeState, string> = {
+  healthy: 'bg-emerald-500/15 text-emerald-200',
+  degraded: 'bg-amber-500/15 text-amber-200',
+  regional_suspect: 'bg-orange-500/15 text-orange-200',
+  endpoint_down: 'bg-red-500/15 text-red-200',
+  insufficient: 'bg-white/5 text-dark-300',
+}
+
+function ReachabilityPanel({ data, loading }: { data: RadarProbes | null; loading: boolean }) {
+  const { t } = useTranslation()
+
+  return (
+    <section className="space-y-3" aria-live="polite">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex items-start gap-2">
+          <Globe2 className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" aria-hidden />
+          <div>
+            <h2 className="text-sm font-semibold text-white">
+              {t('plugins.block_radar.reachability.title')}
+            </h2>
+            <p className="mt-1 max-w-3xl text-xs leading-relaxed text-dark-300">
+              {t('plugins.block_radar.reachability.subtitle')}
+            </p>
+          </div>
+        </div>
+        <span className={`rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wider ${
+          data?.configured ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'
+        }`}>
+          {t(data?.configured
+            ? 'plugins.block_radar.reachability.configured'
+            : 'plugins.block_radar.reachability.not_configured')}
+        </span>
+      </div>
+
+      <div className="glass-card overflow-hidden">
+        {loading && (
+          <div className="space-y-3 p-5">
+            <div className="h-4 w-48 animate-pulse rounded bg-white/10" />
+            <div className="h-12 animate-pulse rounded bg-white/5" />
+          </div>
+        )}
+        {!loading && (data?.items.length ?? 0) === 0 && (
+          <div className="flex items-center gap-3 p-5">
+            <Network className="h-5 w-5 shrink-0 text-dark-400" aria-hidden />
+            <p className="text-sm text-dark-300">
+              {t('plugins.block_radar.reachability.empty')}
+            </p>
+          </div>
+        )}
+        {(data?.items ?? []).map((target) => (
+          <div key={target.target_uuid} className="border-b border-white/5 p-4 last:border-b-0 sm:p-5">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(5.5rem,.55fr))_auto] sm:items-center">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium text-white">{target.target_name}</div>
+                <div className="mt-0.5 text-[11px] text-dark-400">
+                  {t('plugins.block_radar.reachability.port', { port: target.target_port })} · {formatTs(target.sampled_at)}
+                </div>
+              </div>
+              <ProbeMetric label={t('plugins.block_radar.reachability.ru')} value={`${target.ru_success}/${target.ru_total}`} />
+              <ProbeMetric label={t('plugins.block_radar.reachability.nodes')} value={`${target.node_success}/${target.node_total}`} />
+              <ProbeMetric label={t('plugins.block_radar.reachability.controls')} value={`${target.control_success}/${target.control_total}`} />
+              <span className={`w-fit rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wider ${PROBE_STATE_CLASS[target.state]}`}>
+                {t(`plugins.block_radar.reachability.states.${target.state}`)}
+              </span>
+            </div>
+            {target.results.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {target.results.map((result, index) => (
+                  <span
+                    key={`${result.source}-${result.vantage_label}-${index}`}
+                    title={result.error_code ?? undefined}
+                    className={`rounded px-2 py-1 text-[10px] tabular-nums ${
+                      result.success ? 'bg-emerald-500/10 text-emerald-200' : 'bg-red-500/10 text-red-200'
+                    }`}
+                  >
+                    {result.vantage_label}
+                    {result.latency_ms != null ? ` · ${Math.round(result.latency_ms)} ms` : ''}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      <p className="px-1 text-[11px] leading-relaxed text-dark-400">
+        {t('plugins.block_radar.reachability.privacy')}
+      </p>
+    </section>
+  )
+}
+
+function ProbeMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider text-dark-400">{label}</div>
+      <div className="mt-0.5 text-sm font-medium tabular-nums text-white">{value}</div>
+    </div>
+  )
+}
+
 function StatusCard({ tick }: { tick: RadarTick | null }) {
   const { t } = useTranslation()
 
@@ -392,11 +504,7 @@ function AlertCard({ alert }: { alert: RadarAlert }) {
   })
 
   return (
-    <div
-      className={`glass-card p-4 border-l-4 ${
-        isOutage ? 'border-amber-500/70' : 'border-red-500/70'
-      } space-y-2`}
-    >
+    <div className="glass-card p-4 space-y-2">
       <div className="flex items-center gap-2">
         <span
           className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${
@@ -523,11 +631,7 @@ function ExpiryNotice({ status }: { status: RadarStatus | null }) {
     days > 1 ? 'expiry_days' : days === 1 ? 'expiry_tomorrow' : days === 0 ? 'expiry_today' : 'expiry_over'
 
   return (
-    <div
-      className={`glass-card p-4 flex items-start gap-3 border-l-4 ${
-        urgent ? 'border-red-500/70' : 'border-amber-500/70'
-      }`}
-    >
+    <div className="glass-card p-4 flex items-start gap-3">
       <Zap className={`w-5 h-5 shrink-0 ${urgent ? 'text-red-400' : 'text-amber-400'}`} aria-hidden />
       <div className="space-y-1">
         <p className="text-sm text-white font-medium">
@@ -548,7 +652,7 @@ function NodeDipCard({ dip }: { dip: RadarNodeDip }) {
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`
 
   return (
-    <div className="glass-card p-4 border-l-4 border-amber-500/70 space-y-2">
+    <div className="glass-card p-4 space-y-2">
       <div className="flex items-center gap-2">
         <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">
           {t('plugins.block_radar.dip_badge')}

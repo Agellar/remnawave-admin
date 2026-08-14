@@ -62,6 +62,45 @@ CREATE TABLE IF NOT EXISTS local_block_radar_ai_usage (
     period TEXT PRIMARY KEY,
     used INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS local_block_radar_probe_cycles (
+    id BIGSERIAL PRIMARY KEY,
+    target_uuid UUID NOT NULL,
+    target_name TEXT NOT NULL,
+    target_port INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    ru_success INTEGER NOT NULL DEFAULT 0,
+    ru_total INTEGER NOT NULL DEFAULT 0,
+    control_success INTEGER NOT NULL DEFAULT 0,
+    control_total INTEGER NOT NULL DEFAULT 0,
+    node_success INTEGER NOT NULL DEFAULT 0,
+    node_total INTEGER NOT NULL DEFAULT 0,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    incident_open BOOLEAN NOT NULL DEFAULT FALSE,
+    globalping_measurement_id TEXT,
+    error_code TEXT,
+    sampled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS local_block_radar_probe_cycles_target_at_idx
+    ON local_block_radar_probe_cycles (target_uuid, sampled_at DESC);
+CREATE INDEX IF NOT EXISTS local_block_radar_probe_cycles_at_idx
+    ON local_block_radar_probe_cycles (sampled_at DESC);
+
+CREATE TABLE IF NOT EXISTS local_block_radar_probe_results (
+    id BIGSERIAL PRIMARY KEY,
+    cycle_id BIGINT NOT NULL REFERENCES local_block_radar_probe_cycles(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    vantage_label TEXT NOT NULL,
+    country TEXT,
+    asn INTEGER,
+    network TEXT,
+    success BOOLEAN NOT NULL,
+    latency_ms DOUBLE PRECISION,
+    error_code TEXT,
+    sampled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS local_block_radar_probe_results_cycle_idx
+    ON local_block_radar_probe_results (cycle_id);
 """
 
 
@@ -96,6 +135,73 @@ async def cleanup(db, days: int) -> None:
         "DELETE FROM local_block_radar_samples WHERE sampled_at < NOW() - make_interval(days => $1)",
         days,
     )
+    await db.execute(
+        "DELETE FROM local_block_radar_probe_cycles WHERE sampled_at < NOW() - make_interval(days => $1)",
+        days,
+    )
+
+
+async def previous_probe_cycle(db, target_uuid: str) -> dict | None:
+    row = await db.fetchrow(
+        """SELECT * FROM local_block_radar_probe_cycles
+           WHERE target_uuid=$1::uuid ORDER BY sampled_at DESC LIMIT 1""",
+        target_uuid,
+    )
+    return dict(row) if row else None
+
+
+async def save_probe_cycle(
+    db, *, target: dict, summary: dict, results: list[dict]
+) -> int:
+    async with db.acquire() as conn:
+        async with conn.transaction():
+            cycle_id = int(await conn.fetchval(
+                """INSERT INTO local_block_radar_probe_cycles
+                          (target_uuid,target_name,target_port,state,ru_success,ru_total,
+                           control_success,control_total,node_success,node_total,
+                           consecutive_failures,incident_open,globalping_measurement_id,error_code)
+                   VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                   RETURNING id""",
+                target["uuid"], target["name"], int(target["port"]), summary["state"],
+                summary["ru_success"], summary["ru_total"], summary["control_success"],
+                summary["control_total"], summary["node_success"], summary["node_total"],
+                summary["consecutive_failures"], summary["incident_open"],
+                summary.get("measurement_id"), summary.get("error_code"),
+            ))
+            if results:
+                await conn.executemany(
+                    """INSERT INTO local_block_radar_probe_results
+                              (cycle_id,source,vantage_label,country,asn,network,
+                               success,latency_ms,error_code)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
+                    [(
+                        cycle_id, row["source"], row["vantage_label"], row.get("country"),
+                        row.get("asn"), row.get("network"), bool(row["success"]),
+                        row.get("latency_ms"), row.get("error_code"),
+                    ) for row in results],
+                )
+    return cycle_id
+
+
+async def probe_overview(db) -> list[dict]:
+    rows = await db.fetch(
+        """SELECT c.*,
+                  COALESCE(jsonb_agg(jsonb_build_object(
+                    'source',r.source,'vantage_label',r.vantage_label,'country',r.country,
+                    'asn',r.asn,'network',r.network,'success',r.success,
+                    'latency_ms',r.latency_ms,'error_code',r.error_code
+                  ) ORDER BY r.source,r.vantage_label)
+                  FILTER (WHERE r.id IS NOT NULL),'[]'::jsonb) AS results
+             FROM local_block_radar_probe_cycles c
+        LEFT JOIN local_block_radar_probe_results r ON r.cycle_id=c.id
+            WHERE c.id IN (
+              SELECT DISTINCT ON (target_uuid) id
+                FROM local_block_radar_probe_cycles
+               ORDER BY target_uuid, sampled_at DESC
+            )
+         GROUP BY c.id ORDER BY c.target_name"""
+    )
+    return [dict(row) for row in rows]
 
 
 async def baseline(db, node_uuid: str, days: int) -> dict | None:

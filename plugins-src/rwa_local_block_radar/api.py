@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import zlib
 from datetime import datetime, timezone
 from typing import Any
@@ -97,12 +98,48 @@ def build_router(ctx, state: dict) -> APIRouter:
         ]
         return {
             "last_tick": state.get("last_tick"),
+            "last_probe": state.get("last_probe"),
+            "globalping_configured": bool(os.getenv("GLOBALPING_API_TOKEN", "").strip()),
             "open_alerts": len(rows),
             "license_usable": True,
             "open_dips": dips,
             "license_state": "not_required",
             "license_tier": "local",
             "license_paid_until": None,
+        }
+
+    @router.get("/probes")
+    async def probes(_: Any = Depends(can_view)) -> dict:
+        rows = await store.probe_overview(ctx.db)
+        items = []
+        for row in rows:
+            results = row["results"]
+            if isinstance(results, str):
+                try:
+                    results = json.loads(results)
+                except ValueError:
+                    results = []
+            items.append({
+                "target_uuid": str(row["target_uuid"]),
+                "target_name": row["target_name"],
+                "target_port": int(row["target_port"]),
+                "state": row["state"],
+                "ru_success": int(row["ru_success"]),
+                "ru_total": int(row["ru_total"]),
+                "control_success": int(row["control_success"]),
+                "control_total": int(row["control_total"]),
+                "node_success": int(row["node_success"]),
+                "node_total": int(row["node_total"]),
+                "consecutive_failures": int(row["consecutive_failures"]),
+                "incident_open": bool(row["incident_open"]),
+                "sampled_at": row["sampled_at"].isoformat(),
+                "error_code": row["error_code"],
+                "results": results or [],
+            })
+        return {
+            "configured": bool(os.getenv("GLOBALPING_API_TOKEN", "").strip()),
+            "last_cycle": state.get("last_probe"),
+            "items": items,
         }
 
     @router.get("/alerts")

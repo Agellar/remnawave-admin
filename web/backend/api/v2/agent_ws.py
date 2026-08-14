@@ -161,6 +161,11 @@ async def agent_websocket(
                     # Agent finished executing a command — log it
                     await _handle_command_result(node_uuid, msg)
 
+                elif msg_type == "connectivity_probe_result":
+                    # Typed, bounded response used by Block Radar. The target
+                    # stays on the backend and is never echoed by the agent.
+                    await agent_manager.resolve_request(node_uuid, msg)
+
                 elif msg_type == "script_output":
                     # Streaming script output — forward to frontend SSE/WS
                     await _handle_script_output(node_uuid, msg)

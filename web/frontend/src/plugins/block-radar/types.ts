@@ -19,6 +19,7 @@ export interface RadarTick {
   alerts_new?: number
   alerts_resolved?: number
   notified?: number
+  external_monitoring?: boolean
 }
 
 /**
@@ -39,6 +40,8 @@ export interface RadarNodeDip {
 
 export interface RadarStatus {
   last_tick: RadarTick | null
+  last_probe?: RadarProbeCycleStatus | null
+  globalping_configured?: boolean
   open_alerts: number
   license_usable: boolean
   open_dips: RadarNodeDip[]
@@ -76,6 +79,59 @@ export interface RadarAlert {
   outage_summary?: string | null
   affected: RadarAffected
   ai_analysis?: RadarAIAnalysis | null
+}
+
+export interface RadarProbeCycleStatus {
+  ok: boolean
+  target_name?: string
+  state?: RadarProbeState
+  targets?: number
+  ru?: string
+  nodes?: string
+  incident_open?: boolean
+  error?: string | null
+}
+
+export type RadarProbeState =
+  | 'healthy'
+  | 'degraded'
+  | 'regional_suspect'
+  | 'endpoint_down'
+  | 'insufficient'
+
+export interface RadarProbeResult {
+  source: 'globalping' | 'node'
+  vantage_label: string
+  country?: string | null
+  asn?: number | null
+  network?: string | null
+  success: boolean
+  latency_ms?: number | null
+  error_code?: string | null
+}
+
+export interface RadarProbeTarget {
+  target_uuid: string
+  target_name: string
+  target_port: number
+  state: RadarProbeState
+  ru_success: number
+  ru_total: number
+  control_success: number
+  control_total: number
+  node_success: number
+  node_total: number
+  consecutive_failures: number
+  incident_open: boolean
+  sampled_at: string
+  error_code?: string | null
+  results: RadarProbeResult[]
+}
+
+export interface RadarProbes {
+  configured: boolean
+  last_cycle?: RadarProbeCycleStatus | null
+  items: RadarProbeTarget[]
 }
 
 export type RadarAIClassification =
@@ -169,6 +225,13 @@ export interface RadarSettings {
   dip_min_users: number
   dip_confirm_ticks: number
   dip_history_days: number
+  globalping_enabled: boolean
+  node_probe_enabled: boolean
+  probe_interval_seconds: number
+  probe_confirm_cycles: number
+  probe_min_ru_results: number
+  node_probe_vantages: number
+  probe_timeout_seconds: number
   ai_enabled: boolean
   ai_auto_analyze: boolean
   ai_model: string

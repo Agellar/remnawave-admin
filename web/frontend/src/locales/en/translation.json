@@ -5694,6 +5694,37 @@
       }
     },
     "block_radar": {
+      "reachability": {
+        "title": "Continuous reachability from Russia",
+        "subtitle": "Every minute the radar checks the next client endpoint from MTS, Rostelecom, ER-Telecom, additional Russian providers, and trusted panel nodes.",
+        "configured": "Globalping connected",
+        "not_configured": "Globalping token required",
+        "empty": "The first cycle has not finished yet. Results will appear after the background check starts.",
+        "port": "TCP {{port}}",
+        "ru": "Russian ISPs",
+        "nodes": "Own nodes",
+        "controls": "Controls",
+        "privacy": "Only the public endpoint IP and TCP port are sent externally. Users, traffic, access keys, and response contents are neither sent nor stored.",
+        "settings_title": "Continuous network checks",
+        "settings_help": "Globalping and trusted nodes run on schedule without a manual trigger. An incident requires quorum and repeated confirmation.",
+        "settings_privacy": "The token stays in the backend environment. It is never exposed to the browser, Git, API responses, or logs.",
+        "states": {
+          "healthy": "reachable",
+          "degraded": "degraded",
+          "regional_suspect": "possible RU filtering",
+          "endpoint_down": "endpoint down",
+          "insufficient": "insufficient data"
+        },
+        "fields": {
+          "globalping_enabled": { "label": "Check with Globalping", "help": "Continuous TCP checks from major Russian networks and control locations." },
+          "node_probe_enabled": { "label": "Check from trusted nodes", "help": "Three independent nodes check the same endpoint without shell execution." },
+          "probe_interval_seconds": { "label": "Interval, sec", "help": "How often to select the next endpoint; minimum 60 seconds." },
+          "probe_confirm_cycles": { "label": "Confirmations", "help": "Consecutive bad cycles required before opening an incident." },
+          "probe_min_ru_results": { "label": "Minimum RU", "help": "Minimum Russian eyeball results required for a verdict." },
+          "node_probe_vantages": { "label": "Trusted nodes", "help": "Number of independent node observers per cycle." },
+          "probe_timeout_seconds": { "label": "Timeout, sec", "help": "Maximum duration of one TCP connection attempt." }
+        }
+      },
       "nav": "Block Radar",
       "title": "Block Radar",
       "subtitle": "Collective censorship detection across the panel network: operator × hoster × transport",

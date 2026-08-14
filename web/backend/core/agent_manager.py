@@ -18,6 +18,7 @@ class AgentConnectionManager:
 
     def __init__(self):
         self._connections: Dict[str, WebSocket] = {}
+        self._pending_requests: Dict[str, tuple[str, asyncio.Future]] = {}
         self._lock = asyncio.Lock()
 
     async def register(self, node_uuid: str, websocket: WebSocket) -> None:
@@ -38,6 +39,15 @@ class AgentConnectionManager:
         """Remove agent connection and clean up terminal sessions."""
         async with self._lock:
             self._connections.pop(node_uuid, None)
+            disconnected = [
+                (request_id, future)
+                for request_id, (owner, future) in self._pending_requests.items()
+                if owner == node_uuid
+            ]
+            for request_id, future in disconnected:
+                self._pending_requests.pop(request_id, None)
+                if not future.done():
+                    future.set_exception(ConnectionError("agent_disconnected"))
         logger.info("Agent unregistered: %s (total: %d)", node_uuid, len(self._connections))
 
         # Close any terminal session associated with this node
@@ -88,6 +98,45 @@ class AgentConnectionManager:
     async def get_websocket(self, node_uuid: str) -> Optional[WebSocket]:
         """Get the WebSocket for a node (for direct streaming like terminal)."""
         return self._connections.get(node_uuid)
+
+    async def request_command(
+        self,
+        node_uuid: str,
+        command: Dict[str, Any],
+        *,
+        request_id: str,
+        timeout: float = 15.0,
+    ) -> Dict[str, Any]:
+        """Send a bounded request and await its typed agent response."""
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        async with self._lock:
+            if request_id in self._pending_requests:
+                raise ValueError("duplicate_request_id")
+            self._pending_requests[request_id] = (node_uuid, future)
+        try:
+            if not await self.send_command(node_uuid, command):
+                raise ConnectionError("agent_not_connected")
+            return await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            async with self._lock:
+                self._pending_requests.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+
+    async def resolve_request(self, node_uuid: str, message: Dict[str, Any]) -> bool:
+        """Resolve a pending typed request from the authenticated node socket."""
+        request_id = str(message.get("request_id") or "")
+        if not request_id:
+            return False
+        async with self._lock:
+            item = self._pending_requests.get(request_id)
+        if not item or item[0] != node_uuid:
+            return False
+        future = item[1]
+        if not future.done():
+            future.set_result(message)
+        return True
 
 
 # Global singleton

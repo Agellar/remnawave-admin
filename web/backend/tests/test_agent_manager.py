@@ -1,4 +1,5 @@
 """Tests for AgentConnectionManager — WebSocket connection tracking."""
+import asyncio
 import json
 
 import pytest
@@ -137,3 +138,28 @@ class TestGetWebsocket:
     async def test_returns_none_for_missing(self, manager):
         ws = await manager.get_websocket("missing")
         assert ws is None
+
+
+class TestRequestCommand:
+    @pytest.mark.asyncio
+    async def test_resolves_only_matching_node(self, manager, mock_ws):
+        await manager.register("node-1", mock_ws)
+        task = asyncio.create_task(manager.request_command(
+            "node-1", {"type": "connectivity_probe", "request_id": "req-1"},
+            request_id="req-1", timeout=1,
+        ))
+        await asyncio.sleep(0)
+        assert await manager.resolve_request("node-2", {"request_id": "req-1"}) is False
+        assert await manager.resolve_request(
+            "node-1", {"request_id": "req-1", "ok": True}
+        ) is True
+        assert (await task)["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_missing_agent_fails_without_leaking_pending_request(self, manager):
+        with pytest.raises(ConnectionError):
+            await manager.request_command(
+                "missing", {"type": "connectivity_probe", "request_id": "req-2"},
+                request_id="req-2", timeout=1,
+            )
+        assert manager._pending_requests == {}
