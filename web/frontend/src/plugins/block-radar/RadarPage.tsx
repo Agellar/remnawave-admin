@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, CheckCircle, Clock, Globe2, Loader2, Network, RefreshCw, Server, Settings, ShieldBan, Sparkles, Zap } from '@/components/brand/icons'
+import { Activity, CheckCircle, ChevronDown, Clock, Globe2, History, Loader2, Network, RefreshCw, Server, Settings, ShieldBan, Sparkles, XCircle, Zap } from '@/components/brand/icons'
 import { toast } from 'sonner'
 
 import LicenseBanner from '@/components/plugins/license'
@@ -130,7 +130,11 @@ export default function RadarPage() {
       {!licenseError && <StatusCard tick={status.data?.last_tick ?? null} />}
 
       {!licenseError && (
-        <ReachabilityPanel data={probes.data ?? null} loading={probes.isLoading} />
+        <ReachabilityPanel
+          data={probes.data ?? null}
+          loading={probes.isLoading}
+          error={probes.isError}
+        />
       )}
 
       {!licenseError && (overview.data?.sites.length ?? 0) > 0 && (
@@ -337,7 +341,31 @@ const PROBE_STATE_CLASS: Record<RadarProbeState, string> = {
   insufficient: 'bg-white/5 text-dark-300',
 }
 
-function ReachabilityPanel({ data, loading }: { data: RadarProbes | null; loading: boolean }) {
+const PROBE_STATE_DOT: Record<RadarProbeState, string> = {
+  healthy: 'bg-emerald-400',
+  degraded: 'bg-amber-400',
+  regional_suspect: 'bg-orange-400',
+  endpoint_down: 'bg-red-400',
+  insufficient: 'bg-dark-400',
+}
+
+const PROBE_STATE_PRIORITY: RadarProbeState[] = [
+  'endpoint_down',
+  'regional_suspect',
+  'degraded',
+  'insufficient',
+  'healthy',
+]
+
+function ReachabilityPanel({
+  data,
+  loading,
+  error,
+}: {
+  data: RadarProbes | null
+  loading: boolean
+  error: boolean
+}) {
   const { t } = useTranslation()
   const qc = useQueryClient()
   const runNow = useMutation({
@@ -353,10 +381,19 @@ function ReachabilityPanel({ data, loading }: { data: RadarProbes | null; loadin
   })
   const running = runNow.isPending || Boolean(data?.probe_running)
   const manualDisabled = running || !data?.configured || !data?.enabled
+  const targets = data?.items ?? []
+  const overallState = PROBE_STATE_PRIORITY.find((state) =>
+    targets.some((target) => target.state === state),
+  ) ?? 'insufficient'
+  const healthyTargets = targets.filter((target) => target.state === 'healthy').length
+  const lastProbeAt = data?.last_probe_at
+    ?? targets.reduce<string | null>((latest, target) => (
+      !latest || new Date(target.sampled_at) > new Date(latest) ? target.sampled_at : latest
+    ), null)
 
   return (
     <section className="space-y-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-x-5 gap-y-3">
         <div className="flex items-start gap-2">
           <Globe2 className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" aria-hidden />
           <div>
@@ -368,86 +405,293 @@ function ReachabilityPanel({ data, loading }: { data: RadarProbes | null; loadin
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <ProbeCountdown
-            enabled={Boolean(data?.enabled)}
-            running={running}
-            nextProbeAt={data?.next_probe_at}
-          />
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={manualDisabled}
-            onClick={() => runNow.mutate()}
-          >
-            <RefreshCw className={`mr-2 h-3.5 w-3.5 ${running ? 'animate-spin' : ''}`} aria-hidden />
-            {t(running
-              ? 'plugins.block_radar.reachability.manual_running'
-              : 'plugins.block_radar.reachability.manual_run')}
-          </Button>
-          <span className={`rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wider ${
-            data?.configured ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'
+        {data && (
+          <span className={`inline-flex min-h-7 items-center rounded-md px-2.5 py-1 text-xs font-medium ${
+            data.configured ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'
           }`}>
-            {t(data?.configured
+            {t(data.configured
               ? 'plugins.block_radar.reachability.configured'
               : 'plugins.block_radar.reachability.not_configured')}
           </span>
-        </div>
+        )}
       </div>
 
-      <div className="glass-card overflow-hidden">
+      <div className="glass-card overflow-visible">
         {loading && (
-          <div className="space-y-3 p-5">
-            <div className="h-4 w-48 animate-pulse rounded bg-white/10" />
-            <div className="h-12 animate-pulse rounded bg-white/5" />
+          <div className="space-y-4 p-5 sm:p-6">
+            <div className="h-5 w-56 animate-pulse rounded bg-white/10" />
+            <div className="h-24 animate-pulse rounded-xl bg-white/5" />
           </div>
         )}
-        {!loading && (data?.items.length ?? 0) === 0 && (
-          <div className="flex items-center gap-3 p-5">
+        {!loading && error && (
+          <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+            <div className="flex items-center gap-3">
+              <XCircle className="h-5 w-5 shrink-0 text-red-300" aria-hidden />
+              <p className="text-sm text-dark-200">
+                {t('plugins.block_radar.reachability.load_error')}
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              className="h-11 w-full sm:w-auto"
+              onClick={() => qc.invalidateQueries({ queryKey: ['block-radar-probes'] })}
+            >
+              <RefreshCw className="mr-2 h-4 w-4" aria-hidden />
+              {t('plugins.block_radar.reachability.retry')}
+            </Button>
+          </div>
+        )}
+        {!loading && !error && targets.length === 0 && (
+          <div className="flex items-center gap-3 p-5 sm:p-6">
             <Network className="h-5 w-5 shrink-0 text-dark-400" aria-hidden />
             <p className="text-sm text-dark-300">
               {t('plugins.block_radar.reachability.empty')}
             </p>
           </div>
         )}
-        {(data?.items ?? []).map((target) => (
-          <div key={target.target_uuid} className="border-b border-white/5 p-4 last:border-b-0 sm:p-5">
-            <div className="grid gap-3 sm:grid-cols-[minmax(0,1.4fr)_repeat(2,minmax(5.5rem,.55fr))_auto] sm:items-center">
-              <div className="min-w-0">
-                <div className="truncate text-sm font-medium text-white">{target.target_name}</div>
-                <div className="mt-0.5 text-[11px] text-dark-400">
-                  {t('plugins.block_radar.reachability.port', { port: target.target_port })} · {formatTs(target.sampled_at)}
+        {!loading && !error && targets.length > 0 && (
+          <>
+            <div className="p-5 sm:p-6">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${PROBE_STATE_DOT[overallState]}`} />
+                    <p className="text-base font-semibold text-white sm:text-lg">
+                      {t(`plugins.block_radar.reachability.summary.${overallState}`)}
+                    </p>
+                  </div>
+                  <p className="mt-1 text-sm text-dark-300">
+                    {t('plugins.block_radar.reachability.available_targets', {
+                      healthy: healthyTargets,
+                      total: targets.length,
+                    })}
+                  </p>
                 </div>
+                <Button
+                  variant="outline"
+                  disabled={manualDisabled}
+                  className="h-11 w-full px-4 sm:w-auto"
+                  onClick={() => runNow.mutate()}
+                >
+                  <RefreshCw className={`mr-2 h-4 w-4 ${running ? 'animate-spin' : ''}`} aria-hidden />
+                  {t(running
+                    ? 'plugins.block_radar.reachability.manual_running'
+                    : 'plugins.block_radar.reachability.manual_run')}
+                </Button>
               </div>
-              <ProbeMetric label={t('plugins.block_radar.reachability.ru')} value={`${target.ru_success}/${target.ru_total}`} />
-              <ProbeMetric label={t('plugins.block_radar.reachability.controls')} value={`${target.control_success}/${target.control_total}`} />
-              <span className={`w-fit rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wider ${PROBE_STATE_CLASS[target.state]}`}>
-                {t(`plugins.block_radar.reachability.states.${target.state}`)}
+
+              <div className="relative mt-6 grid gap-5 md:grid-cols-3 md:gap-4">
+                <div className="absolute bottom-5 left-[17px] top-5 w-px bg-white/10 md:bottom-auto md:left-[16.667%] md:right-[16.667%] md:top-[17px] md:h-px md:w-auto" />
+                <ScheduleStep
+                  icon={<History className="h-4 w-4" aria-hidden />}
+                  label={t('plugins.block_radar.reachability.last_check')}
+                  value={lastProbeAt ? formatTs(lastProbeAt) : t('plugins.block_radar.reachability.never')}
+                />
+                <ScheduleStep
+                  icon={running
+                    ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                    : <Activity className="h-4 w-4" aria-hidden />}
+                  label={t('plugins.block_radar.reachability.now')}
+                  value={t(running
+                    ? 'plugins.block_radar.reachability.timer_running'
+                    : `plugins.block_radar.reachability.states.${overallState}`)}
+                  accent
+                />
+                <ScheduleStep
+                  icon={<Clock className="h-4 w-4" aria-hidden />}
+                  label={t('plugins.block_radar.reachability.next_check')}
+                  value={(
+                    <ProbeCountdown
+                      enabled={Boolean(data?.enabled)}
+                      running={running}
+                      nextProbeAt={data?.next_probe_at}
+                    />
+                  )}
+                />
+              </div>
+            </div>
+
+            <div className="border-t border-white/[0.07]">
+              <div className="px-5 pb-2 pt-5 sm:px-6">
+                <h3 className="text-sm font-semibold text-white">
+                  {t('plugins.block_radar.reachability.targets_title')}
+                </h3>
+                <p className="mt-1 text-xs text-dark-400">
+                  {t('plugins.block_radar.reachability.targets_help')}
+                </p>
+              </div>
+              {targets.map((target) => (
+                <ProbeTargetRow key={target.target_uuid} target={target} />
+              ))}
+            </div>
+
+            <details className="group border-t border-white/[0.07] px-5 py-4 sm:px-6">
+              <summary className="flex min-h-8 cursor-pointer list-none items-center justify-between gap-3 rounded-md text-xs text-dark-400 hover:text-dark-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60">
+                <span>{t('plugins.block_radar.reachability.privacy_summary')}</span>
+                <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" aria-hidden />
+              </summary>
+              <p className="mt-3 max-w-3xl text-xs leading-relaxed text-dark-400">
+                {t('plugins.block_radar.reachability.privacy')}
+              </p>
+            </details>
+          </>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function ScheduleStep({
+  icon,
+  label,
+  value,
+  accent = false,
+}: {
+  icon: ReactNode
+  label: string
+  value: ReactNode
+  accent?: boolean
+}) {
+  return (
+    <div className="relative z-10 flex min-w-0 items-start gap-3 md:block md:text-center">
+      <span className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border ${
+        accent
+          ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-200'
+          : 'border-white/10 bg-dark-900 text-dark-300'
+      }`}>
+        {icon}
+      </span>
+      <div className="min-w-0 pt-0.5 md:mt-2 md:pt-0">
+        <div className="text-xs text-dark-400">{label}</div>
+        <div className="mt-0.5 truncate text-sm font-medium tabular-nums text-dark-100">{value}</div>
+      </div>
+    </div>
+  )
+}
+
+function ProbeTargetRow({ target }: { target: RadarProbes['items'][number] }) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(target.state !== 'healthy')
+  const ruResults = target.results.filter((result) => result.country === 'RU')
+  const controlResults = target.results.filter((result) => result.country !== 'RU')
+
+  useEffect(() => {
+    if (target.state !== 'healthy') setOpen(true)
+  }, [target.state])
+
+  return (
+    <details
+      className="group border-b border-white/[0.06] px-5 py-4 last:border-b-0 sm:px-6"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="cursor-pointer list-none rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(15rem,.9fr)_auto] lg:items-center">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${PROBE_STATE_DOT[target.state]}`} />
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-white" title={target.target_name}>
+                {target.target_name}
+              </div>
+              <div className="mt-1 text-xs text-dark-400">
+                {t('plugins.block_radar.reachability.port', { port: target.target_port })} · {formatTs(target.sampled_at)}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <ProbeRouteSummary
+              label={t('plugins.block_radar.reachability.ru')}
+              value={`${target.ru_success}/${target.ru_total}`}
+              healthy={target.ru_total > 0 && target.ru_success >= Math.ceil(target.ru_total / 2)}
+            />
+            <ProbeRouteSummary
+              label={t('plugins.block_radar.reachability.controls')}
+              value={`${target.control_success}/${target.control_total}`}
+              healthy={target.control_total > 0 && target.control_success > 0}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 lg:justify-end">
+            <span className={`rounded-md px-2.5 py-1.5 text-xs font-medium ${PROBE_STATE_CLASS[target.state]}`}>
+              {t(`plugins.block_radar.reachability.states.${target.state}`)}
+            </span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-dark-400 transition-transform group-open:rotate-180" aria-hidden />
+          </div>
+        </div>
+      </summary>
+
+      <div className="mt-4 grid gap-4 border-t border-white/[0.06] pt-4 lg:grid-cols-2">
+        <ProbeResultGroup
+          label={t('plugins.block_radar.reachability.ru_route')}
+          results={ruResults}
+        />
+        <ProbeResultGroup
+          label={t('plugins.block_radar.reachability.control_route')}
+          results={controlResults}
+        />
+      </div>
+    </details>
+  )
+}
+
+function ProbeRouteSummary({
+  label,
+  value,
+  healthy,
+}: {
+  label: string
+  value: string
+  healthy: boolean
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className={`h-2 w-2 shrink-0 rounded-full ${healthy ? 'bg-emerald-400' : 'bg-red-400'}`} />
+      <div className="min-w-0">
+        <div className="truncate text-[11px] text-dark-400">{label}</div>
+        <div className="text-sm font-medium tabular-nums text-dark-100">{value}</div>
+      </div>
+    </div>
+  )
+}
+
+function ProbeResultGroup({
+  label,
+  results,
+}: {
+  label: string
+  results: RadarProbes['items'][number]['results']
+}) {
+  const { t } = useTranslation()
+  return (
+    <div>
+      <div className="text-xs font-medium text-dark-300">{label}</div>
+      <div className="mt-2 space-y-1.5">
+        {results.length === 0 && (
+          <p className="text-xs text-dark-500">{t('plugins.block_radar.reachability.no_results')}</p>
+        )}
+        {results.map((result, index) => (
+          <div
+            key={`${result.source}-${result.vantage_label}-${index}`}
+            className="flex min-h-8 items-center justify-between gap-3 rounded-lg bg-white/[0.035] px-2.5 py-1.5"
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              {result.success
+                ? <CheckCircle className="h-3.5 w-3.5 shrink-0 text-emerald-300" aria-hidden />
+                : <XCircle className="h-3.5 w-3.5 shrink-0 text-red-300" aria-hidden />}
+              <span className="truncate text-xs text-dark-200" title={result.vantage_label}>
+                {result.vantage_label}
               </span>
             </div>
-            {target.results.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {target.results.map((result, index) => (
-                  <span
-                    key={`${result.source}-${result.vantage_label}-${index}`}
-                    title={result.error_code ?? undefined}
-                    className={`rounded px-2 py-1 text-[10px] tabular-nums ${
-                      result.success ? 'bg-emerald-500/10 text-emerald-200' : 'bg-red-500/10 text-red-200'
-                    }`}
-                  >
-                    {result.vantage_label}
-                    {result.latency_ms != null ? ` · ${Math.round(result.latency_ms)} ms` : ''}
-                  </span>
-                ))}
-              </div>
-            )}
+            <span className={`shrink-0 text-xs tabular-nums ${result.success ? 'text-emerald-200' : 'text-red-200'}`}>
+              {result.latency_ms != null
+                ? `${Math.round(result.latency_ms)} ms`
+                : result.error_code ?? t('plugins.block_radar.reachability.failed')}
+            </span>
           </div>
         ))}
       </div>
-      <p className="px-1 text-[11px] leading-relaxed text-dark-400">
-        {t('plugins.block_radar.reachability.privacy')}
-      </p>
-    </section>
+    </div>
   )
 }
 
@@ -482,22 +726,7 @@ function ProbeCountdown({
   }
 
   return (
-    <div
-      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-white/[0.04] px-2.5 text-xs tabular-nums text-dark-200"
-      aria-live="off"
-    >
-      <Clock className="h-3.5 w-3.5 text-cyan-300" aria-hidden />
-      <span>{value}</span>
-    </div>
-  )
-}
-
-function ProbeMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-[10px] uppercase tracking-wider text-dark-400">{label}</div>
-      <div className="mt-0.5 text-sm font-medium tabular-nums text-white">{value}</div>
-    </div>
+    <span aria-live="off">{value}</span>
   )
 }
 
