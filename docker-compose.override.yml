@@ -10,7 +10,7 @@ services:
     ports: !reset []
 
   web-backend:
-    image: agellar/remnawave-admin-web-backend:4.5.6-plugins-05b8b1e9
+    image: agellar/remnawave-admin-web-backend:4.5.6-plugins-48d9683e
     ports: !reset []
     depends_on:
       bedolaga-tunnel:
@@ -20,7 +20,7 @@ services:
       RWA_LIVE_FLOW_USERS_PAGE: "500"
 
   web-collector:
-    image: agellar/remnawave-admin-web-backend:4.5.6-plugins-05b8b1e9
+    image: agellar/remnawave-admin-web-backend:4.5.6-plugins-48d9683e
 
   web-frontend:
     image: agellar/remnawave-admin-web-frontend:4.5.6-perf-1f8d04a7
