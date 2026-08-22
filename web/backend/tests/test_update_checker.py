@@ -301,9 +301,11 @@ class TestParseVersion:
     def test_version_with_plus_suffix_three_parts(self):
         assert uc._parse_version("2.4.1+7") == (2, 4, 1)
 
+    def test_version_with_vendor_suffix(self):
+        assert uc._parse_version("4.5.6-agellar.1e1c0e72") == (4, 5, 6)
+
     def test_non_numeric_part_stops_parsing(self):
-        """Non-numeric segment stops parsing (e.g. '1-beta' is not int)."""
-        # "2" ok, "4" ok, "1-beta" raises ValueError -> stops
+        """A prerelease suffix must not be treated as the stable patch."""
         assert uc._parse_version("2.4.1-beta") == (2, 4)
 
     def test_empty_string_returns_zero(self):
@@ -355,6 +357,48 @@ class TestCheckForUpdatesExtended:
         }
         result = await uc.check_for_updates()
         assert result["update_available"] is False
+
+    @pytest.mark.asyncio
+    @patch(
+        "web.backend.core.update_checker._detect_local_version",
+        return_value="4.5.6-agellar.1e1c0e72",
+    )
+    @patch(
+        "web.backend.core.update_checker._fetch_latest_release",
+        new_callable=AsyncMock,
+    )
+    async def test_no_update_when_custom_build_matches_latest_base(
+        self, mock_fetch, _mock_local
+    ):
+        mock_fetch.return_value = {
+            "tag_name": "v4.5.6",
+            "html_url": "",
+            "body": "",
+            "published_at": None,
+        }
+        result = await uc.check_for_updates()
+        assert result["update_available"] is False
+
+    @pytest.mark.asyncio
+    @patch(
+        "web.backend.core.update_checker._detect_local_version",
+        return_value="4.5.5-agellar.1e1c0e72",
+    )
+    @patch(
+        "web.backend.core.update_checker._fetch_latest_release",
+        new_callable=AsyncMock,
+    )
+    async def test_update_when_custom_build_has_older_base(
+        self, mock_fetch, _mock_local
+    ):
+        mock_fetch.return_value = {
+            "tag_name": "v4.5.6",
+            "html_url": "",
+            "body": "",
+            "published_at": None,
+        }
+        result = await uc.check_for_updates()
+        assert result["update_available"] is True
 
     @pytest.mark.asyncio
     @patch("web.backend.core.update_checker._detect_local_version", return_value="3.0.0")

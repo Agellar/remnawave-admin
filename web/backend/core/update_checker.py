@@ -100,9 +100,20 @@ def _detect_local_version() -> str:
 
 
 def _parse_version(ver: str) -> Tuple[int, ...]:
-    """Parse version string like '2.4.1' into tuple (2, 4, 1) for comparison."""
-    # Strip any +N suffix (e.g. "2.4+3")
-    base = ver.split("+")[0]
+    """Parse the numeric release base into a tuple for comparison.
+
+    Local Agellar builds append a trusted vendor suffix (for example
+    ``4.5.6-agellar.1e1c0e72``).  They still derive from the upstream 4.5.6
+    release and must compare as 4.5.6.  Other ``-`` suffixes retain the prior
+    prerelease behaviour, so a beta build does not mask the stable release.
+    """
+    base = ver.split("+", 1)[0]
+    agellar_marker = "-agellar"
+    marker_at = base.find(agellar_marker)
+    if marker_at >= 0:
+        suffix = base[marker_at + len(agellar_marker):]
+        if not suffix or suffix.startswith((".", "-")):
+            base = base[:marker_at]
     parts = []
     for p in base.split("."):
         try:
