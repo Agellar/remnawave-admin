@@ -13,6 +13,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from rwa_incident_hub.freshness import history_status
+
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 # UA мониторинга и утилит: они дёргают ссылку подписки, но клиентом юзера
@@ -354,13 +356,10 @@ def _anomalies(stats) -> List[str]:
 
 
 # Таблица истории запросов подписки наполняется синком панели, а не нами.
-# Если синк встал, «последний запрос конфига» тихо стареет на всех юзерах
-# сразу и плагин начинает уверенно врать («не обновлял 36 дней» человеку,
-# который обновил минуту назад). Так и случилось 30.06.2026: панель 3.x
-# пересоздала таблицу со сбросом id, а инкрементальный синк админки берёт
-# только записи с id больше локального максимума — и замер на месяц.
-# Свежесть проверяем по всей таблице: у живого сервиса запросы идут
-# непрерывно, и тишина дольше порога означает поломку источника.
+# Состояние воркера берём из sync_metadata: отсутствие новых запросов само по
+# себе нормально и не означает, что источник сломан. Общий helper сохраняет
+# MAX(request_at) как диагностический event timestamp и использует его только
+# на старых установках, где metadata ещё отсутствует.
 SOURCE_STALE_AFTER_MINUTES = 10
 
 
@@ -371,13 +370,9 @@ async def client_section(db, user_uuid: str, latest_versions: Dict[str, str]) ->
            ORDER BY request_at DESC LIMIT 50""",
         user_uuid,
     )
-    newest_overall = await db.fetchval(
-        "SELECT max(request_at) FROM subscription_request_history"
-    )
-    stale = bool(
-        newest_overall is None
-        or (_now() - newest_overall).total_seconds() > SOURCE_STALE_AFTER_MINUTES * 60
-    )
+    freshness = await history_status(db, SOURCE_STALE_AFTER_MINUTES)
+    stale = not bool(freshness["fresh"])
+    newest_event = freshness.get("event_newest_at")
 
     picked = None
     for r in rows:
@@ -388,7 +383,7 @@ async def client_section(db, user_uuid: str, latest_versions: Dict[str, str]) ->
         return {"last_app": None, "last_version": None, "raw_user_agent": None,
                 "last_request_at": rows[0]["request_at"] if rows else None,
                 "is_outdated": None, "days_since_last_request": None,
-                "source_stale": stale, "source_newest_at": newest_overall}
+                "source_stale": stale, "source_newest_at": newest_event}
 
     app, version = parse_user_agent(picked["user_agent"])
     days = (_now() - picked["request_at"]).days if picked["request_at"] else None
@@ -409,7 +404,7 @@ async def client_section(db, user_uuid: str, latest_versions: Dict[str, str]) ->
         # о поломке синка, а не о поведении клиента.
         "days_since_last_request": None if stale else days,
         "source_stale": stale,
-        "source_newest_at": newest_overall,
+        "source_newest_at": newest_event,
     }
 
 

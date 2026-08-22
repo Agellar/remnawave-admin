@@ -102,3 +102,42 @@ class TestSyncSrh:
         ])
         with patch("shared.sync.db_service", db), patch("shared.sync.api_client", api):
             assert await svc.sync_subscription_request_history() == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            None,
+            {},
+            {"response": None},
+            {"response": {"records": []}},
+            {"response": {"records": "not-a-list", "total": 0}},
+            {"response": {"records": ["not-an-object"], "total": 1}},
+            {"response": {"records": [], "total": 1}},
+        ],
+    )
+    async def test_malformed_success_payload_marks_sync_error(self, payload):
+        """HTTP 200 with a broken body must not refresh sync health."""
+        svc = SyncService()
+        db = _db_mock()
+        api = AsyncMock()
+        api.get_subscription_request_history.return_value = payload
+
+        with patch("shared.sync.db_service", db), patch("shared.sync.api_client", api):
+            assert await svc.sync_subscription_request_history() == 0
+
+        db.update_sync_metadata.assert_awaited_once()
+        assert db.update_sync_metadata.await_args.kwargs["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_legitimate_empty_history_marks_sync_success(self):
+        svc = SyncService()
+        db = _db_mock()
+        api = AsyncMock()
+        api.get_subscription_request_history.return_value = _page([])
+
+        with patch("shared.sync.db_service", db), patch("shared.sync.api_client", api):
+            assert await svc.sync_subscription_request_history() == 0
+
+        db.update_sync_metadata.assert_awaited_once()
+        assert db.update_sync_metadata.await_args.kwargs["status"] == "success"

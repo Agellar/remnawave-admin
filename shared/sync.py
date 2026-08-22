@@ -1461,11 +1461,26 @@ class SyncService:
         try:
             for _ in range(max_pages):
                 result = await api_client.get_subscription_request_history(start=start, size=page_size)
-                response = result.get("response", result) if isinstance(result, dict) else result
-                records = response.get("records", []) if isinstance(response, dict) else []
-                total = response.get("total", 0) if isinstance(response, dict) else 0
+                if not isinstance(result, dict):
+                    raise ValueError("SRH API returned a non-object payload")
+                response = result.get("response", result)
+                if not isinstance(response, dict):
+                    raise ValueError("SRH API response field is not an object")
+                if "records" not in response or "total" not in response:
+                    raise ValueError("SRH API payload is missing records or total")
+
+                records = response["records"]
+                total = response["total"]
+                if not isinstance(records, list):
+                    raise ValueError("SRH API records field is not a list")
+                if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+                    raise ValueError("SRH API total field is not a non-negative integer")
+                if any(not isinstance(record, dict) for record in records):
+                    raise ValueError("SRH API records contain a non-object item")
 
                 if not records:
+                    if start < total:
+                        raise ValueError("SRH API returned an empty page before total was reached")
                     break
 
                 # Инкрементальный stop: если все записи страницы уже известны — останавливаемся

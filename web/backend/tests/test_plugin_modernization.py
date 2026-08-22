@@ -131,14 +131,15 @@ def test_incident_center_manifest_is_free_and_operator_facing():
 @pytest.mark.asyncio
 async def test_freshness_circuit_breaker_marks_old_history_stale():
     db = AsyncMock()
-    db.fetchval.return_value = "subscription_request_history"
-    db.fetchrow.return_value = {
-        "newest_at": object(),
-        "age_seconds": 901,
-    }
+    db.fetchval.side_effect = ["subscription_request_history", "sync_metadata"]
+    db.fetchrow.side_effect = [
+        {"newest_at": object(), "age_seconds": 901},
+        None,
+    ]
     result = await incident_freshness.history_status(db, max_age_minutes=10)
     assert result["fresh"] is False
     assert result["state"] == "stale"
+    assert result["freshness_basis"] == "sync_metadata"
 
 
 @pytest.mark.asyncio
@@ -165,9 +166,15 @@ async def test_incident_review_writes_an_audit_event():
 async def test_smart_support_marks_subscription_source_stale_after_ten_minutes():
     db = AsyncMock()
     db.fetch.return_value = []
-    db.fetchval.return_value = datetime.now(timezone.utc) - timedelta(minutes=11)
+    event_at = datetime.now(timezone.utc) - timedelta(minutes=11)
+    db.fetchval.side_effect = ["subscription_request_history", "sync_metadata"]
+    db.fetchrow.side_effect = [
+        {"newest_at": event_at, "age_seconds": 11 * 60},
+        None,
+    ]
     result = await support_data.client_section(db, "user", {})
     assert result["source_stale"] is True
+    assert result["source_newest_at"] == event_at
 
 
 @pytest.mark.asyncio
