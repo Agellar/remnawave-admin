@@ -4,29 +4,26 @@ services:
   # Bot disabled for now: server blocks most Telegram IPs (IPv6 dead).
   # Re-enable after setting up WARP/proxy egress.
   bot:
+    image: agellar/remnawave-admin-bot:4.5.6-824de75d
     deploy:
       replicas: 0
     ports: !reset []
 
   web-backend:
-    image: agellar/remnawave-admin-web-backend:4.4.0-radar06-54e54a31
+    image: agellar/remnawave-admin-web-backend:4.5.6-plugins-824de75d
     ports: !reset []
     depends_on:
       bedolaga-tunnel:
         condition: service_started
-    # Свой плагин Smart Support: исходники смонтированы в /app, откуда их
-    # видит загрузчик плагинов через RWA_DEV_PLUGINS. Wheel не собираем —
-    # правка + рестарт контейнера быстрее и переживает docker compose pull.
-    volumes:
-      - ./plugins-src/rwa_smart_support:/app/rwa_smart_support:ro
-      - ./plugins-src/rwa_retention_radar:/app/rwa_retention_radar:ro
-      - ./plugins-src/rwa_local_block_radar:/app/rwa_local_block_radar:ro
-      - ./plugins-src/rwa_incident_hub:/app/rwa_incident_hub:ro
     environment:
-      RWA_DEV_PLUGINS: rwa_smart_support.plugin:manifest,rwa_retention_radar.plugin:manifest,rwa_local_block_radar.plugin:manifest,rwa_incident_hub.plugin:manifest
+      RWA_LIVE_FLOW_MAX_USERS: "5000"
+      RWA_LIVE_FLOW_USERS_PAGE: "500"
+
+  web-collector:
+    image: agellar/remnawave-admin-web-backend:4.5.6-plugins-824de75d
 
   web-frontend:
-    image: agellar/remnawave-admin-web-frontend:4.4.0-reachability-ui-608995c0
+    image: agellar/remnawave-admin-web-frontend:4.5.6-perf-824de75d
     ports: !reset []
 
   # Приватный канал к Bedolaga Bot Web API на 193.53.40.18.
