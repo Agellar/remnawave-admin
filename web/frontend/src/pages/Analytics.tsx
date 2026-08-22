@@ -29,11 +29,11 @@ import {
 } from '@/components/brand/icons'
 import {
   Tooltip as RechartsTooltip,
-  ResponsiveContainer,
   PieChart,
   Pie,
   Cell,
 } from 'recharts'
+import { MeasuredChartContainer } from '@/components/charts/MeasuredChartContainer'
 import { toast } from 'sonner'
 import client from '@/api/client'
 import { advancedAnalyticsApi } from '@/api/advancedAnalytics'
@@ -1270,7 +1270,7 @@ function ProvidersCard() {
                 <div>
                   <h3 className="text-sm font-medium text-white mb-3">{t('analytics.providers.connectionTypes', { defaultValue: 'Connection Types' })}</h3>
                   <div className="h-48">
-                    <ResponsiveContainer width="100%" height="100%">
+                    <MeasuredChartContainer width="100%" height="100%">
                       <PieChart>
                         <Pie
                           data={connectionTypes}
@@ -1291,7 +1291,7 @@ function ProvidersCard() {
                           formatter={(value, name) => [`${Number(value).toLocaleString()} (${connectionTypes.find((c) => c.type === name)?.percent ?? 0}%)`, t(`analytics.providers.connectionType.${String(name)}`, { defaultValue: String(name) })]}
                         />
                       </PieChart>
-                    </ResponsiveContainer>
+                    </MeasuredChartContainer>
                   </div>
                   <div className="flex flex-wrap gap-2 mt-2 justify-center">
                     {connectionTypes.map((ct, i) => (

@@ -56,9 +56,9 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip as RechartsTooltip,
-  ResponsiveContainer,
   Cell,
 } from 'recharts'
+import { MeasuredChartContainer } from '@/components/charts/MeasuredChartContainer'
 import { InteractiveChart } from '@/components/charts/InteractiveChart'
 import client from '../api/client'
 import { auditApi, type AuditLogEntry } from '../api/audit'
@@ -2291,7 +2291,7 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent>
               {connectionsBarData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={Math.max(connectionsBarData.length * 40 + 20, 120)}>
+                <MeasuredChartContainer width="100%" height={Math.max(connectionsBarData.length * 40 + 20, 120)}>
                   <BarChart data={connectionsBarData} layout="vertical">
                     <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} horizontal={false} />
                     <XAxis type="number" stroke={chart.axis} fontSize={10} tickLine={false} axisLine={false} />
@@ -2303,7 +2303,7 @@ export default function Dashboard() {
                       ))}
                     </Bar>
                   </BarChart>
-                </ResponsiveContainer>
+                </MeasuredChartContainer>
               ) : (
                 <div className="h-[120px] flex items-center justify-center">
                   <div className="text-center">

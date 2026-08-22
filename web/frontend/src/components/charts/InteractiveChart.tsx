@@ -8,13 +8,14 @@
  */
 import { useMemo, useState, useRef, useEffect, ReactElement } from 'react'
 import {
-  ResponsiveContainer, ComposedChart, Area, Line, Bar, XAxis, YAxis,
+  ComposedChart, Area, Line, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip as RechartsTooltip, Legend, Brush, ReferenceArea,
 } from 'recharts'
 import { useChartTheme } from '@/lib/useChartTheme'
 import { useTranslation } from 'react-i18next'
 import { Activity, BarChart3, TrendingUp, Download, Maximize2 } from '@/components/brand/icons'
 import { cn } from '@/lib/utils'
+import { MeasuredChartContainer } from './MeasuredChartContainer'
 
 export type ChartType = 'area' | 'line' | 'bar'
 
@@ -175,7 +176,7 @@ export function InteractiveChart({
       </div>
 
       <div style={{ height, userSelect: dragA ? 'none' : undefined }}>
-        <ResponsiveContainer width="100%" height="100%">
+        <MeasuredChartContainer width="100%" height="100%">
           <ComposedChart data={viewData} margin={{ top: 5, right: 8, bottom: 0, left: 0 }}
             onMouseDown={(e) => { const l = e?.activeLabel; if (l != null) { setDragA(String(l)); setDragB(String(l)) } }}
             onMouseMove={(e) => { const l = e?.activeLabel; if (dragA && l != null) setDragB(String(l)) }}
@@ -213,7 +214,7 @@ export function InteractiveChart({
                 tickFormatter={() => ''} />
             )}
           </ComposedChart>
-        </ResponsiveContainer>
+        </MeasuredChartContainer>
       </div>
       <p className="text-[10px] text-muted-foreground text-center mt-1">{t('charts.dragHint')}</p>
     </div>

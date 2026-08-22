@@ -28,8 +28,9 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
-  Tooltip as RechartsTooltip, ResponsiveContainer, PieChart, Pie, Cell,
+  Tooltip as RechartsTooltip, PieChart, Pie, Cell,
 } from 'recharts'
+import { MeasuredChartContainer } from '@/components/charts/MeasuredChartContainer'
 import { InteractiveChart } from '@/components/charts/InteractiveChart'
 import { financeApi, FinanceItem, ItemPayload, FinanceProvider, FinanceAccount, FinanceService, AccountTestResult } from '../api/finance'
 import client from '../api/client'
@@ -366,7 +367,7 @@ function OverviewTab() {
                 {t('finance.noItems')}
               </div>
             ) : (
-              <ResponsiveContainer width="100%" height={240}>
+              <MeasuredChartContainer width="100%" height={240}>
                 <PieChart>
                   <Pie
                     data={summary.by_category} dataKey="monthly" nameKey="category"
@@ -381,7 +382,7 @@ function OverviewTab() {
                     formatter={(v, n) => [fmtMoney(Number(v) || 0, base), String(n)]}
                   />
                 </PieChart>
-              </ResponsiveContainer>
+              </MeasuredChartContainer>
             )}
           </CardContent>
         </Card>
