@@ -5,6 +5,7 @@ import sys
 PLUGIN_SRC = Path(__file__).resolve().parents[3] / "plugins-src"
 sys.path.insert(0, str(PLUGIN_SRC))
 
+from rwa_local_block_radar.api import _current_probe_rows
 from rwa_local_block_radar.probes import _locations, summarize
 
 
@@ -70,3 +71,14 @@ def test_major_live_ru_providers_are_selected():
     ]
     locations = _locations(probes)
     assert [item.get("asn") for item in locations[:3]] == [8359, 12389, 41786]
+
+
+def test_probe_timeline_only_contains_current_public_targets():
+    rows = [
+        {"target_uuid": "current"},
+        {"target_uuid": "preserved-history"},
+    ]
+
+    visible = _current_probe_rows(rows, [{"uuid": "current"}])
+
+    assert visible == [{"target_uuid": "current"}]

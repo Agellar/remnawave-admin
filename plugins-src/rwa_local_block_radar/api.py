@@ -11,10 +11,16 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from . import ai, qcode, settings as settings_mod, store
+from . import ai, probes as probes_mod, qcode, settings as settings_mod, store
 
 RBAC_RESOURCES = {"block_radar": ["view", "settings", "edit"]}
 _VERDICTS = {"confirmed", "false_positive"}
+
+
+def _current_probe_rows(rows: list[Any], targets: list[dict]) -> list[Any]:
+    """Hide preserved history for Hosts that are no longer probe targets."""
+    current = {str(target.get("uuid")) for target in targets if target.get("uuid")}
+    return [row for row in rows if str(row["target_uuid"]) in current]
 
 
 def _probe_schedule(state: dict) -> dict:
@@ -138,6 +144,7 @@ def build_router(ctx, state: dict) -> APIRouter:
     @router.get("/probes")
     async def probes(_: Any = Depends(can_view)) -> dict:
         rows = await store.probe_overview(ctx.db)
+        rows = _current_probe_rows(rows, await probes_mod.active_targets(ctx.db))
         items = []
         for row in rows:
             results = row["results"]

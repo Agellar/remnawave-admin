@@ -1,4 +1,4 @@
-"""Continuous reachability checks from Globalping and trusted panel nodes."""
+"""Continuous Globalping reachability checks for current public panel Hosts."""
 from __future__ import annotations
 
 import asyncio
