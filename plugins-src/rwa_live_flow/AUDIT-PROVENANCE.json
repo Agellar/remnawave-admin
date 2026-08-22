@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "audited_at": "2026-08-22",
+  "upstream": {
+    "repository": "https://github.com/chudo-arky/rwa-plugin-live-flow",
+    "release": "v0.16.0",
+    "tag_object": "901a3cc6eb05c37ce6df558953071d9eb8a70333",
+    "tag_target": "b84c68e7553db965668deb21386457cf3b88ae5a",
+    "tag_target_tree": "5052a90718063a72d854da87ef74c24350fbdaed",
+    "main_commit": "a0962f623afcacd4c7cd96b472ec8eae76885e76",
+    "main_tree": "4f55feef13159e981ef74cb555c4bc53bc15691b",
+    "wheel": "rwa_plugin_live_flow-0.16.0-py3-none-any.whl",
+    "wheel_sha256": "4196ba13f2fac4bf76411d6357c4b35c56898630b2004b1fc862985b11111dc3",
+    "artifact_attestation": false,
+    "tag_signed": false,
+    "executable_sources_equal_after_eol_normalization": true
+  },
+  "fork": {
+    "version": "0.16.0+agellar.1",
+    "integration": "source baked into immutable backend image",
+    "minimum_admin_version": "4.5.6",
+    "production_touched": false
+  }
+}

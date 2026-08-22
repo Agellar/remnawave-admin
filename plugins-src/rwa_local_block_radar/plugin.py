@@ -151,6 +151,7 @@ def manifest() -> PluginManifest:
                 path="/plugins/block-radar",
                 label_i18n="plugins.block_radar.nav",
                 icon="Activity",
+                permission=("block_radar", "view"),
                 section_i18n="nav.sections.plugins",
             )
         ],

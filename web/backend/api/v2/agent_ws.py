@@ -125,6 +125,15 @@ async def agent_websocket(
     except Exception as e:
         logger.debug("Failed to push blocked IPs to agent %s: %s", node_uuid, e)
 
+    # Состояние nDPI тоже отправляем при каждом подключении: агент после
+    # перезапуска про него не помнит, а панель — единственный источник
+    # правды об этом тумблере.
+    try:
+        from web.backend.core import ndpi_rollout
+        await ndpi_rollout.push_to_node(node_uuid, token)
+    except Exception as e:
+        logger.debug("Failed to push nDPI setting to agent %s: %s", node_uuid, e)
+
     try:
         while True:
             try:
@@ -160,11 +169,6 @@ async def agent_websocket(
                 elif msg_type == "command_result":
                     # Agent finished executing a command — log it
                     await _handle_command_result(node_uuid, msg)
-
-                elif msg_type == "connectivity_probe_result":
-                    # Typed, bounded response used by Block Radar. The target
-                    # stays on the backend and is never echoed by the agent.
-                    await agent_manager.resolve_request(node_uuid, msg)
 
                 elif msg_type == "script_output":
                     # Streaming script output — forward to frontend SSE/WS

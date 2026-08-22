@@ -13,7 +13,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from . import ai, qcode, settings as settings_mod, store
 
-RBAC_RESOURCES = {"block_radar": ["view", "settings"]}
+RBAC_RESOURCES = {"block_radar": ["view", "settings", "edit"]}
+_VERDICTS = {"confirmed", "false_positive"}
 
 
 def _probe_schedule(state: dict) -> dict:
@@ -82,6 +83,11 @@ def _alert(row) -> dict:
             "lost": offline,
         },
         "ai_analysis": analysis,
+        "feedback": row["feedback"] if "feedback" in row else None,
+        "feedback_at": (
+            row["feedback_at"].isoformat()
+            if "feedback_at" in row and row["feedback_at"] else None
+        ),
     }
 
 
@@ -91,6 +97,7 @@ def build_router(ctx, state: dict) -> APIRouter:
     _, require_permission = auth_deps()
     can_view = require_permission("block_radar", "view")
     can_settings = require_permission("block_radar", "settings")
+    can_edit = require_permission("block_radar", "edit")
     router = APIRouter()
 
     @router.get("/status")
@@ -118,6 +125,10 @@ def build_router(ctx, state: dict) -> APIRouter:
             "open_alerts": len(rows),
             "license_usable": True,
             "open_dips": dips,
+            # The local edition has no cross-panel dataset. Returning null is
+            # explicit and avoids presenting a local/Globalping comparison as
+            # the official 0.7.3 "neighbour panels" signal.
+            "self_alert": None,
             "license_state": "not_required",
             "license_tier": "local",
             "license_paid_until": None,
@@ -224,6 +235,24 @@ def build_router(ctx, state: dict) -> APIRouter:
             limit, offset,
         )
         return {"items": [_alert(row) for row in rows], "total": total}
+
+    @router.post("/alerts/{alert_id}/feedback")
+    async def feedback(
+        alert_id: int,
+        body: dict[str, Any] = Body(...),
+        _: Any = Depends(can_edit),
+    ) -> dict:
+        verdict = str(body.get("verdict") or "").strip()
+        if verdict not in _VERDICTS:
+            raise HTTPException(status_code=422, detail="invalid_verdict")
+        row = await store.set_feedback(ctx.db, alert_id, verdict)
+        if row is None:
+            raise HTTPException(status_code=404, detail="alert_not_found")
+        return {
+            "id": int(row["id"]),
+            "feedback": row["feedback"],
+            "feedback_at": row["feedback_at"].isoformat(),
+        }
 
     @router.get("/ai/status")
     async def ai_status(_: Any = Depends(can_view)) -> dict:

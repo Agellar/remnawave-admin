@@ -773,7 +773,7 @@ class ViolationsMixin:
         self,
         violation_id: int,
         action_taken: str,
-        admin_telegram_id: int,
+        admin_telegram_id: Optional[int] = None,
         admin_comment: Optional[str] = None,
     ) -> bool:
         """
@@ -782,7 +782,8 @@ class ViolationsMixin:
         Args:
             violation_id: ID нарушения
             action_taken: Принятое действие
-            admin_telegram_id: Telegram ID администратора
+            admin_telegram_id: Telegram ID администратора; None — действие
+                выполнила система (автоблокировка), человека за ним нет
             admin_comment: Примечание администратора
 
         Returns:
@@ -1489,15 +1490,9 @@ class ViolationsMixin:
                         except json.JSONDecodeError:
                             raw_data = None
                     if isinstance(raw_data, dict):
-                        response = raw_data.get("response", raw_data)
-                        hwid_limit = response.get("hwidDeviceLimit")
-                        if hwid_limit is not None:
-                            limit = int(hwid_limit)
-                            count = 1 if limit == 0 else max(1, limit)
-                        else:
-                            dc = response.get("devicesCount")
-                            if dc is not None:
-                                count = max(1, int(dc))
+                        from shared.db.network import _device_allowance_from_raw
+
+                        count = _device_allowance_from_raw(raw_data)
                 result[uid] = count
 
             for uid in user_uuids:
@@ -1615,9 +1610,23 @@ class ViolationsMixin:
     async def batch_get_shared_hwids(
         self, user_uuids: List[str]
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Batch get shared HWIDs for multiple users."""
+        """Batch get shared HWIDs for multiple users.
+
+        Держит тот же контракт, что и ``get_shared_hwids_for_user``: email для
+        группировки подписок одного человека без Telegram, ``is_trial`` и
+        ``is_active`` для отсечки апгрейда «пробная → платная» от абуза
+        параллельных триалов. Это горячий путь (коллектор и HWID-скан идут
+        через ``check_users_batch``), поэтому расхождение с одиночным методом
+        означало бы, что анализатор в проде работает вслепую.
+        """
         if not self.is_connected or not user_uuids:
             return {}
+
+        from shared.db.network import (
+            _load_trial_settings, _is_trial_user, _subscription_is_active,
+        )
+
+        trial_tags, trial_squads = _load_trial_settings()
 
         try:
             async with self.acquire() as conn:
@@ -1625,9 +1634,20 @@ class ViolationsMixin:
                     f"""
                     SELECT h1.user_uuid::text AS source_uuid,
                            h2.hwid,
+                           -- отвязанные устройства остаются в выдаче: схема
+                           -- «удалил → новый аккаунт → тот же HWID → триал»
+                           -- иначе не видна, в снимке аккаунт всегда один
+                           h2.removed_at AS removed_at,
+                           h1.removed_at AS self_removed_at,
                            u.uuid::text AS user_uuid,
                            u.username, u.status, u.telegram_id,
-                           me.telegram_id AS self_telegram_id
+                           u.email, u.tag, u.expire_at, u.raw_data,
+                           me.telegram_id AS self_telegram_id,
+                           me.email       AS self_email,
+                           me.status      AS self_status,
+                           me.tag         AS self_tag,
+                           me.expire_at   AS self_expire_at,
+                           me.raw_data    AS self_raw_data
                     FROM {USER_HWID_DEVICES_TABLE} h1
                     JOIN {USERS_TABLE} me ON me.uuid = h1.user_uuid
                     JOIN {USER_HWID_DEVICES_TABLE} h2
@@ -1650,6 +1670,13 @@ class ViolationsMixin:
                     temp[src][hwid] = {
                         "hwid": hwid,
                         "self_telegram_id": r["self_telegram_id"],
+                        "self_email": r["self_email"],
+                        "self_is_trial": _is_trial_user(
+                            r["self_tag"], r["self_raw_data"], trial_tags, trial_squads,
+                        ),
+                        "self_is_active": _subscription_is_active(
+                            r["self_expire_at"], r["self_status"],
+                        ),
                         "other_users": [],
                     }
                 temp[src][hwid]["other_users"].append({
@@ -1657,6 +1684,12 @@ class ViolationsMixin:
                     "username": r["username"],
                     "status": r["status"],
                     "telegram_id": r["telegram_id"],
+                    "email": r["email"],
+                    "is_trial": _is_trial_user(r["tag"], r["raw_data"], trial_tags, trial_squads),
+                    "is_active": _subscription_is_active(r["expire_at"], r["status"]),
+                    # Устройство у этого аккаунта уже отвязано: связь
+                    # историческая, но для детекта абуза она и важна
+                    "removed_at": r["removed_at"],
                 })
 
             for src, hwid_groups in temp.items():
@@ -1681,7 +1714,8 @@ class ViolationsMixin:
                         "user_uuid::text, hwid, platform, os_version, "
                         "device_model, app_version, user_agent, "
                         "created_at, updated_at",
-                        "WHERE user_uuid = ANY($1::uuid[]) ORDER BY user_uuid, created_at DESC",
+                        "WHERE user_uuid = ANY($1::uuid[]) AND removed_at IS NULL "
+                        "ORDER BY user_uuid, created_at DESC",
                     ),
                     user_uuids,
                 )

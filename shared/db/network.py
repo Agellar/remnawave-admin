@@ -19,6 +19,126 @@ from shared.db_schema import (
 from shared.db_query import select_sql, insert_sql, update_sql, delete_sql
 
 
+# Downstream analyzers currently accept a numeric device allowance.  Remnawave
+# uses 0 for an unlimited HWID limit, so mapping it to 1 creates the exact
+# opposite semantics and false sharing/impossible-travel alerts.  This bounded
+# sentinel is deliberately far above any real household while avoiding magic
+# infinities in arithmetic and logs.
+UNLIMITED_DEVICE_ALLOWANCE = 10_000
+
+
+def _device_allowance_from_raw(raw_data: Any) -> int:
+    """Resolve the analyzer allowance from a synced Panel user payload."""
+    if isinstance(raw_data, str):
+        try:
+            raw_data = json.loads(raw_data)
+        except (json.JSONDecodeError, TypeError):
+            return 1
+    if not isinstance(raw_data, dict):
+        return 1
+
+    response = raw_data.get("response", raw_data)
+    if not isinstance(response, dict):
+        return 1
+
+    observed = 0
+    try:
+        observed = max(0, int(response.get("devicesCount") or 0))
+    except (TypeError, ValueError):
+        observed = 0
+    for key in ("devices", "hwidDevices"):
+        devices = response.get(key)
+        if isinstance(devices, list):
+            observed = max(observed, len(devices))
+
+    hwid_limit = response.get("hwidDeviceLimit")
+    if hwid_limit is not None:
+        try:
+            limit = int(hwid_limit)
+        except (TypeError, ValueError):
+            limit = 1
+        if limit == 0:
+            return max(UNLIMITED_DEVICE_ALLOWANCE, observed)
+        return max(1, limit)
+
+    return max(1, observed)
+
+
+def _load_trial_settings() -> Tuple[List[str], List[str]]:
+    """Читает настройки определения триальности: теги + internal squad'ы.
+
+    Возвращает (trial_tags, trial_squads) — обе в нижнем регистре.
+    """
+    from shared.config_service import config_service
+
+    trial_tags_raw = config_service.get("violations_trial_tags", "trial") or ""
+    trial_tags = [t.strip().lower() for t in str(trial_tags_raw).split(",") if t.strip()]
+
+    trial_squads_raw = config_service.get("violations_trial_squad_uuids", "[]")
+    trial_squads: List[str] = []
+    try:
+        parsed = json.loads(trial_squads_raw)
+        if isinstance(parsed, list):
+            trial_squads = [s.strip().lower() for s in parsed if isinstance(s, str) and s.strip()]
+    except (ValueError, TypeError):
+        pass
+
+    return trial_tags, trial_squads
+
+
+def _is_trial_user(
+    tag: Optional[str],
+    raw_data: Any,
+    trial_tags: List[str],
+    trial_squads: List[str],
+) -> bool:
+    """Триальный ли пользователь — по тегу либо по активному internal squad."""
+    user_tag = (tag or "").strip().lower()
+    if user_tag and user_tag in trial_tags:
+        return True
+
+    if not trial_squads or not raw_data:
+        return False
+
+    if isinstance(raw_data, str):
+        try:
+            raw_data = json.loads(raw_data)
+        except (ValueError, TypeError):
+            return False
+
+    if not isinstance(raw_data, dict):
+        return False
+
+    user_squads = raw_data.get("activeInternalSquads") or []
+    if not isinstance(user_squads, list):
+        return False
+
+    for sq in user_squads:
+        if isinstance(sq, str) and sq.strip().lower() in trial_squads:
+            return True
+        # Панель v3 отдаёт сквады объектами {uuid, name}, а не строками
+        if isinstance(sq, dict):
+            sq_uuid = str(sq.get("uuid") or "").strip().lower()
+            if sq_uuid and sq_uuid in trial_squads:
+                return True
+
+    return False
+
+
+def _subscription_is_active(expire_at: Any, status: Optional[str] = None) -> bool:
+    """Подписка живая: срок не истёк и статус не отключён вручную."""
+    if status and status.upper() in ("DISABLED", "LIMITED", "EXPIRED"):
+        return False
+    if not expire_at:
+        return False
+    if hasattr(expire_at, 'tzinfo') and expire_at.tzinfo is None:
+        expire_at = expire_at.replace(tzinfo=timezone.utc)
+    try:
+        return expire_at > datetime.now(timezone.utc)
+    except TypeError:
+        return False
+
+
 class NetworkMixin:
     # ==================== User Devices (HWID) ====================
     # Используем данные из users.raw_data вместо отдельной таблицы
@@ -54,27 +174,7 @@ class NetworkMixin:
                             pass
 
                     if isinstance(raw_data, dict):
-                        # Проверяем различные возможные поля с данными об устройствах
-                        response = raw_data.get("response", raw_data)
-
-                        # Основное поле - hwidDeviceLimit (лимит HWID устройств)
-                        hwid_device_limit = response.get("hwidDeviceLimit")
-                        if hwid_device_limit is not None:
-                            # 0 означает безлимит, но для расчёта используем 1
-                            limit = int(hwid_device_limit)
-                            if limit == 0:
-                                return 1  # Безлимит - используем 1 как базу
-                            return max(1, limit)
-
-                        # Fallback: devicesCount (старый формат)
-                        devices_count = response.get("devicesCount")
-                        if devices_count is not None:
-                            return max(1, int(devices_count))
-
-                        # Fallback: массив devices
-                        devices = response.get("devices", [])
-                        if isinstance(devices, list) and len(devices) > 0:
-                            return len(devices)
+                        return _device_allowance_from_raw(raw_data)
 
                 # Если данных нет, возвращаем 1 по умолчанию
                 logger.debug("No device limit data found for user %s, using default 1", user_uuid)
@@ -516,7 +616,10 @@ class NetworkMixin:
                         app_version = COALESCE(EXCLUDED.app_version, {USER_HWID_DEVICES_TABLE}.app_version),
                         user_agent = COALESCE(EXCLUDED.user_agent, {USER_HWID_DEVICES_TABLE}.user_agent),
                         updated_at = COALESCE(EXCLUDED.updated_at, NOW()),
-                        synced_at = NOW()
+                        synced_at = NOW(),
+                        -- вернулось на тот же аккаунт: обычная переустановка,
+                        -- а не новый владелец — снимаем пометку об отвязке
+                        removed_at = NULL
                     """,
                     user_uuid, hwid, platform, os_version, device_model, app_version,
                     user_agent, created_at, updated_at
@@ -540,10 +643,12 @@ class NetworkMixin:
         try:
             async with self.acquire() as conn:
                 result = await conn.execute(
-                    delete_sql(USER_HWID_DEVICES_TABLE, "user_uuid = $1 AND hwid = $2"),
+                    f"""UPDATE {USER_HWID_DEVICES_TABLE}
+                            SET removed_at = NOW()
+                          WHERE user_uuid = $1 AND hwid = $2 AND removed_at IS NULL""",
                     user_uuid, hwid
                 )
-                return "DELETE" in result
+                return "UPDATE" in result
 
         except Exception as e:
             logger.error("Error deleting HWID device for user %s: %s", user_uuid, e, exc_info=True)
@@ -551,13 +656,17 @@ class NetworkMixin:
 
     async def delete_hwid_devices_except_users(self, user_uuids: List[str]) -> int:
         """
-        Удалить HWID-записи всех юзеров, которых НЕТ в списке.
+        Пометить отвязанными HWID-записи всех юзеров, которых НЕТ в списке.
 
         Используется полным синком: юзер, у которого в панели удалили последнее
         устройство, не попадает в выдачу API вообще — per-user синк его не чистит.
 
+        Именно сюда и уезжал абузер триалов: он удаляет все свои устройства,
+        аккаунт пропадает из выдачи панели, и полный синк дочищал за ним следы.
+        Теперь строки остаются с ``removed_at``.
+
         Returns:
-            Количество удалённых записей
+            Количество помеченных записей
         """
         if not self.is_connected or not user_uuids:
             return 0
@@ -565,10 +674,13 @@ class NetworkMixin:
         try:
             async with self.acquire() as conn:
                 result = await conn.execute(
-                    delete_sql(USER_HWID_DEVICES_TABLE, "NOT (user_uuid = ANY($1::uuid[]))"),
+                    f"""UPDATE {USER_HWID_DEVICES_TABLE}
+                            SET removed_at = NOW()
+                          WHERE NOT (user_uuid = ANY($1::uuid[]))
+                            AND removed_at IS NULL""",
                     list(user_uuids),
                 )
-                if result and "DELETE" in result:
+                if result and "UPDATE" in result:
                     try:
                         return int(result.split()[1])
                     except (IndexError, ValueError):
@@ -576,15 +688,18 @@ class NetworkMixin:
                 return 0
 
         except Exception as e:
-            logger.error("Error deleting stale HWID devices: %s", e, exc_info=True)
+            logger.error("Error marking stale HWID devices removed: %s", e, exc_info=True)
             return 0
 
     async def delete_all_user_hwid_devices(self, user_uuid: str) -> int:
         """
-        Удалить все HWID устройства пользователя.
+        Отвязать все HWID устройства пользователя.
+
+        Строки не удаляются: HWID должен помнить всех, кого на нём видели,
+        иначе «сбросить устройства» становится кнопкой обхода детекта.
 
         Returns:
-            Количество удалённых записей
+            Количество помеченных записей
         """
         if not self.is_connected:
             return 0
@@ -592,11 +707,12 @@ class NetworkMixin:
         try:
             async with self.acquire() as conn:
                 result = await conn.execute(
-                    delete_sql(USER_HWID_DEVICES_TABLE, "user_uuid = $1"),
+                    f"""UPDATE {USER_HWID_DEVICES_TABLE}
+                            SET removed_at = NOW()
+                          WHERE user_uuid = $1 AND removed_at IS NULL""",
                     user_uuid
                 )
-                # Parse "DELETE X" to get count
-                if result and "DELETE" in result:
+                if result and "UPDATE" in result:
                     try:
                         return int(result.split()[1])
                     except (IndexError, ValueError):
@@ -604,12 +720,13 @@ class NetworkMixin:
                 return 0
 
         except Exception as e:
-            logger.error("Error deleting all HWID devices for user %s: %s", user_uuid, e, exc_info=True)
+            logger.error("Error removing all HWID devices for user %s: %s", user_uuid, e, exc_info=True)
             return 0
 
-    async def get_user_hwid_devices(self, user_uuid: str) -> List[Dict[str, Any]]:
-        """
-        Получить список HWID устройств пользователя.
+    async def get_user_hwid_devices(self, user_uuid: str,
+                                    removed: bool = False) -> List[Dict[str, Any]]:
+        """Устройства пользователя. ``removed=True`` — те, что отвязали:
+        строки остаются в таблице ради детекта абуза триалов.
 
         Returns:
             Список устройств с полями: hwid, platform, os_version, app_version, created_at, updated_at
@@ -623,8 +740,12 @@ class NetworkMixin:
                     select_sql(
                         USER_HWID_DEVICES_TABLE,
                         """hwid, platform, os_version, device_model, app_version,
-                           user_agent, created_at, updated_at""",
-                        "WHERE user_uuid = $1 ORDER BY created_at DESC",
+                           user_agent, created_at, updated_at, removed_at""",
+                        ("WHERE user_uuid = $1 AND removed_at IS NOT NULL "
+                         "ORDER BY removed_at DESC")
+                        if removed else
+                        ("WHERE user_uuid = $1 AND removed_at IS NULL "
+                         "ORDER BY created_at DESC"),
                     ),
                     user_uuid
                 )
@@ -647,7 +768,8 @@ class NetworkMixin:
         try:
             async with self.acquire() as conn:
                 result = await conn.fetchval(
-                    select_sql(USER_HWID_DEVICES_TABLE, "COUNT(*)", "WHERE user_uuid = $1"),
+                    select_sql(USER_HWID_DEVICES_TABLE, "COUNT(*)",
+                               "WHERE user_uuid = $1 AND removed_at IS NULL"),
                     user_uuid
                 )
                 return result or 0
@@ -812,7 +934,8 @@ class NetworkMixin:
         try:
             async with self.acquire() as conn:
                 rows = await conn.fetch(
-                    select_sql(USER_HWID_DEVICES_TABLE, "user_uuid, COUNT(*) as cnt", "GROUP BY user_uuid")
+                    select_sql(USER_HWID_DEVICES_TABLE, "user_uuid, COUNT(*) as cnt",
+                               "WHERE removed_at IS NULL GROUP BY user_uuid")
                 )
                 return {str(row["user_uuid"]): row["cnt"] for row in rows}
 
@@ -842,10 +965,12 @@ class NetworkMixin:
         try:
             async with self.acquire() as conn:
                 async with conn.transaction():
-                    # Получаем текущие HWID
+                    # Получаем текущие HWID (только привязанные: отвязанные
+                    # лежат тут же и перепомечать их незачем)
                     current_hwids = set()
                     rows = await conn.fetch(
-                        select_sql(USER_HWID_DEVICES_TABLE, "hwid", "WHERE user_uuid = $1"),
+                        select_sql(USER_HWID_DEVICES_TABLE, "hwid",
+                                   "WHERE user_uuid = $1 AND removed_at IS NULL"),
                         user_uuid
                     )
                     current_hwids = {row['hwid'] for row in rows}
@@ -857,14 +982,20 @@ class NetworkMixin:
                         if hwid:
                             new_hwids.add(hwid)
 
-                    # Удаляем устройства, которых больше нет
-                    to_delete = current_hwids - new_hwids
-                    if to_delete:
+                    # Помечаем отвязанными те, которых в панели больше нет.
+                    # Раньше строки удалялись — и синк молча затирал историю,
+                    # на которой стоит детект абуза триалов.
+                    to_remove = current_hwids - new_hwids
+                    if to_remove:
                         await conn.execute(
-                            delete_sql(USER_HWID_DEVICES_TABLE, "user_uuid = $1 AND hwid = ANY($2)"),
-                            user_uuid, list(to_delete)
+                            f"""UPDATE {USER_HWID_DEVICES_TABLE}
+                                    SET removed_at = NOW()
+                                  WHERE user_uuid = $1 AND hwid = ANY($2)
+                                    AND removed_at IS NULL""",
+                            user_uuid, list(to_remove)
                         )
-                        logger.debug("Deleted %d old HWID devices for user %s", len(to_delete), user_uuid)
+                        logger.debug("Marked %d HWID devices removed for user %s",
+                                     len(to_remove), user_uuid)
 
                     # Добавляем/обновляем устройства
                     synced = 0
@@ -900,7 +1031,10 @@ class NetworkMixin:
                                 app_version = COALESCE(EXCLUDED.app_version, {USER_HWID_DEVICES_TABLE}.app_version),
                                 user_agent = COALESCE(EXCLUDED.user_agent, {USER_HWID_DEVICES_TABLE}.user_agent),
                                 updated_at = COALESCE(EXCLUDED.updated_at, NOW()),
-                                synced_at = NOW()
+                                synced_at = NOW(),
+                                -- панель снова отдаёт устройство этому же
+                                -- аккаунту: переустановка, а не новый владелец
+                                removed_at = NULL
                             """,
                             user_uuid, hwid, platform, os_version, device_model,
                             app_version, user_agent, created_at, updated_at
@@ -926,10 +1060,12 @@ class NetworkMixin:
         try:
             async with self.acquire() as conn:
                 # Общая статистика
+                # Отвязанные не в счёт: это история для детекта, а не парк устройств
                 stats = await conn.fetchrow(
                     select_sql(
                         USER_HWID_DEVICES_TABLE,
                         "COUNT(*) as total_devices, COUNT(DISTINCT user_uuid) as unique_users",
+                        "WHERE removed_at IS NULL",
                     ),
                 )
 
@@ -938,7 +1074,7 @@ class NetworkMixin:
                     select_sql(
                         USER_HWID_DEVICES_TABLE,
                         "COALESCE(platform, 'unknown') as platform, COUNT(*) as count",
-                        "GROUP BY platform ORDER BY count DESC",
+                        "WHERE removed_at IS NULL GROUP BY platform ORDER BY count DESC",
                     ),
                 )
 
@@ -959,20 +1095,7 @@ class NetworkMixin:
         if not self.is_connected:
             return []
 
-        # Load trial detection settings
-        from shared.config_service import config_service
-        trial_tags_raw = config_service.get("violations_trial_tags", "trial")
-        trial_tags = [t.strip().lower() for t in trial_tags_raw.split(",") if t.strip()]
-
-        trial_squads_raw = config_service.get("violations_trial_squad_uuids", "[]")
-        trial_squads: list = []
-        try:
-            import json as _json
-            parsed = _json.loads(trial_squads_raw)
-            if isinstance(parsed, list):
-                trial_squads = [s.strip().lower() for s in parsed if isinstance(s, str) and s.strip()]
-        except (ValueError, TypeError):
-            pass
+        trial_tags, trial_squads = _load_trial_settings()
 
         try:
             async with self.acquire() as conn:
@@ -988,6 +1111,9 @@ class NetworkMixin:
                     )
                     SELECT h.hwid, h.platform, h.device_model, h.app_version,
                            h.created_at as hwid_first_seen,
+                           -- отвязанные тоже здесь: без них связка «старый
+                           -- аккаунт → новый на том же железе» не видна
+                           h.removed_at,
                            u.uuid::text as user_uuid, u.username, u.status,
                            u.created_at as user_created_at,
                            u.expire_at,
@@ -1002,8 +1128,6 @@ class NetworkMixin:
                 )
 
                 # Group by hwid
-                from datetime import timezone as _tz
-                now = datetime.now(_tz.utc)
                 groups: Dict[str, Dict[str, Any]] = {}
                 for r in rows:
                     hwid = r["hwid"]
@@ -1017,35 +1141,11 @@ class NetworkMixin:
                         }
                     groups[hwid]["user_count"] += 1
 
-                    # Determine is_active from expire_at
                     expire_at = r.get("expire_at")
-                    is_active = False
-                    if expire_at:
-                        if hasattr(expire_at, 'tzinfo') and expire_at.tzinfo is None:
-                            expire_at = expire_at.replace(tzinfo=_tz.utc)
-                        is_active = expire_at > now
-
-                    # Determine is_trial from tag and internal squads
-                    is_trial = False
-                    user_tag = (r.get("tag") or "").strip().lower()
-                    if user_tag and user_tag in trial_tags:
-                        is_trial = True
-
-                    if not is_trial and trial_squads:
-                        raw_data = r.get("raw_data")
-                        if raw_data:
-                            if isinstance(raw_data, str):
-                                try:
-                                    import json as _json2
-                                    raw_data = _json2.loads(raw_data)
-                                except (ValueError, TypeError):
-                                    raw_data = {}
-                            user_squads = raw_data.get("activeInternalSquads") or []
-                            if isinstance(user_squads, list):
-                                for sq in user_squads:
-                                    if isinstance(sq, str) and sq.strip().lower() in trial_squads:
-                                        is_trial = True
-                                        break
+                    if expire_at and hasattr(expire_at, 'tzinfo') and expire_at.tzinfo is None:
+                        expire_at = expire_at.replace(tzinfo=timezone.utc)
+                    is_active = _subscription_is_active(expire_at)
+                    is_trial = _is_trial_user(r.get("tag"), r.get("raw_data"), trial_tags, trial_squads)
 
                     groups[hwid]["users"].append({
                         "uuid": r["user_uuid"],
@@ -1053,6 +1153,7 @@ class NetworkMixin:
                         "status": r["status"],
                         "created_at": r["user_created_at"].isoformat() if r["user_created_at"] else None,
                         "hwid_first_seen": r["hwid_first_seen"].isoformat() if r["hwid_first_seen"] else None,
+                        "removed_at": r["removed_at"].isoformat() if r["removed_at"] else None,
                         "expire_date": expire_at.isoformat() if expire_at else None,
                         "is_active": is_active,
                         "is_trial": is_trial,
@@ -1074,20 +1175,41 @@ class NetworkMixin:
         the requested user) and ``telegram_id`` on every other user, so the
         violation detector can group sibling accounts: Bedolaga multi-tariff
         mode binds several panel UUIDs to one telegram_id.
+
+        Кроме telegram_id отдаётся ``email`` (у регистраций без Telegram он
+        единственное, что связывает подписки одного человека) и признаки
+        ``is_trial`` / ``is_active`` — без них анализатор не отличает абуз
+        параллельных триалов от обычного апгрейда «пробная → платная».
         """
         if not self.is_connected:
             return []
+
+        trial_tags, trial_squads = _load_trial_settings()
 
         try:
             async with self.acquire() as conn:
                 rows = await conn.fetch(
                     f"""
                     SELECT h2.hwid,
+                           -- Отвязанные устройства остаются в выдаче: схема
+                           -- «удалил → новый аккаунт → тот же HWID → триал»
+                           -- иначе не видна, в снимке аккаунт всегда один.
+                           h2.removed_at AS removed_at,
+                           h1.removed_at AS self_removed_at,
                            u.uuid::text  AS user_uuid,
                            u.username,
                            u.status,
                            u.telegram_id,
-                           me.telegram_id AS self_telegram_id
+                           u.email,
+                           u.tag,
+                           u.expire_at,
+                           u.raw_data,
+                           me.telegram_id AS self_telegram_id,
+                           me.email       AS self_email,
+                           me.status      AS self_status,
+                           me.tag         AS self_tag,
+                           me.expire_at   AS self_expire_at,
+                           me.raw_data    AS self_raw_data
                     FROM {USER_HWID_DEVICES_TABLE} h1
                     JOIN {USERS_TABLE} me ON me.uuid = h1.user_uuid
                     JOIN {USER_HWID_DEVICES_TABLE} h2 ON h1.hwid = h2.hwid AND h2.user_uuid != h1.user_uuid
@@ -1108,6 +1230,13 @@ class NetworkMixin:
                         groups[hwid] = {
                             "hwid": hwid,
                             "self_telegram_id": r["self_telegram_id"],
+                            "self_email": r["self_email"],
+                            "self_is_trial": _is_trial_user(
+                                r["self_tag"], r["self_raw_data"], trial_tags, trial_squads,
+                            ),
+                            "self_is_active": _subscription_is_active(
+                                r["self_expire_at"], r["self_status"],
+                            ),
                             "other_users": [],
                         }
                     groups[hwid]["other_users"].append({
@@ -1115,6 +1244,12 @@ class NetworkMixin:
                         "username": r["username"],
                         "status": r["status"],
                         "telegram_id": r["telegram_id"],
+                        "email": r["email"],
+                        "is_trial": _is_trial_user(r["tag"], r["raw_data"], trial_tags, trial_squads),
+                        "is_active": _subscription_is_active(r["expire_at"], r["status"]),
+                        # Устройство у этого аккаунта уже отвязано: связь
+                        # историческая, но для детекта абуза она и важна
+                        "removed_at": r["removed_at"],
                     })
 
                 return list(groups.values())
@@ -1127,20 +1262,116 @@ class NetworkMixin:
 
     async def get_blocked_ips(
         self, limit: int = 50, offset: int = 0, include_expired: bool = False,
+        days: int = 30,
     ) -> List[Dict[str, Any]]:
-        """Get blocked IPs with pagination."""
+        """Записи стоп-листа со счётчиками: кого этот адрес задевает.
+
+        Без счётчиков список — просто столбик адресов: не видно, отрезали вы
+        одного абузера или подсеть, за которой сидит десяток живых абонентов.
+        Считаются только адреса из истории подключений за окно, пробные —
+        отдельно, они и есть повод для большинства блокировок.
+        """
         if not self.is_connected:
             return []
+
+        trial_tags, _ = _load_trial_settings()
+        tags = [t for t in (trial_tags or []) if t] or ['__none__']
+
         try:
             where = "" if include_expired else "WHERE expires_at IS NULL OR expires_at > NOW()"
             async with self.acquire() as conn:
                 rows = await conn.fetch(
-                    select_sql(BLOCKED_IPS_TABLE, "*", f"{where} ORDER BY created_at DESC LIMIT $1 OFFSET $2"),
-                    limit, offset,
+                    f"""
+                    SELECT b.*, s.accounts, s.trial_accounts, s.last_seen
+                      FROM (
+                        SELECT * FROM {BLOCKED_IPS_TABLE}
+                        {where}
+                        ORDER BY created_at DESC
+                        LIMIT $1 OFFSET $2
+                      ) b
+                      LEFT JOIN LATERAL (
+                        SELECT COUNT(DISTINCT c.user_uuid) AS accounts,
+                               COUNT(DISTINCT c.user_uuid)
+                                   FILTER (WHERE u.tag = ANY($3::text[])) AS trial_accounts,
+                               MAX(c.connected_at) AS last_seen
+                          FROM {USER_CONNECTIONS_TABLE} c
+                          JOIN {USERS_TABLE} u ON u.uuid = c.user_uuid
+                         WHERE c.connected_at > NOW() - ($4 || ' days')::interval
+                           AND c.ip_address ~ '^[0-9.]+$'
+                           AND c.ip_address::inet <<= b.ip_cidr
+                      ) s ON TRUE
+                    """,
+                    limit, offset, tags, str(days),
                 )
                 return [dict(r) for r in rows]
         except Exception as e:
             logger.error("Error getting blocked IPs: %s", e)
+            return []
+
+    async def get_blocked_ip_by_id(self, block_id: int) -> Optional[Dict[str, Any]]:
+        """Запись стоп-листа по идентификатору."""
+        if not self.is_connected:
+            return None
+        try:
+            async with self.acquire() as conn:
+                row = await conn.fetchrow(
+                    select_sql(BLOCKED_IPS_TABLE, "*", "WHERE id = $1"), block_id
+                )
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error("Error getting blocked IP %s: %s", block_id, e)
+            return None
+
+    async def get_users_by_blocked_ip(
+        self, ip_cidr: str, days: int = 30, limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Кто заходил с адреса (или из подсети) за окно — для разбора блокировки."""
+        if not self.is_connected:
+            return []
+
+        trial_tags, trial_squads = _load_trial_settings()
+
+        try:
+            async with self.acquire() as conn:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT c.user_uuid::text AS user_uuid,
+                           COUNT(*)            AS conns,
+                           MIN(c.connected_at) AS first_seen,
+                           MAX(c.connected_at) AS last_seen,
+                           MAX(c.ip_address)   AS sample_ip,
+                           u.username, u.status, u.telegram_id, u.email,
+                           u.tag, u.expire_at, u.raw_data
+                      FROM {USER_CONNECTIONS_TABLE} c
+                      JOIN {USERS_TABLE} u ON u.uuid = c.user_uuid
+                     WHERE c.connected_at > NOW() - ($2 || ' days')::interval
+                       AND c.ip_address ~ '^[0-9.]+$'
+                       AND c.ip_address::inet <<= $1::cidr
+                     GROUP BY c.user_uuid, u.username, u.status, u.telegram_id,
+                              u.email, u.tag, u.expire_at, u.raw_data
+                     ORDER BY COUNT(*) DESC
+                     LIMIT $3
+                    """,
+                    ip_cidr, str(days), limit,
+                )
+
+            return [{
+                "user_uuid": r["user_uuid"],
+                "username": r["username"],
+                "status": r["status"],
+                "telegram_id": r["telegram_id"],
+                "email": r["email"],
+                "expire_at": r["expire_at"],
+                "conns": r["conns"],
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+                "sample_ip": r["sample_ip"],
+                "is_trial": _is_trial_user(r["tag"], r["raw_data"], trial_tags, trial_squads),
+                "is_active": _subscription_is_active(r["expire_at"], r["status"]),
+            } for r in rows]
+
+        except Exception as e:
+            logger.error("Error getting users by blocked IP %s: %s", ip_cidr, e)
             return []
 
     async def get_blocked_ips_count(self, include_expired: bool = False) -> int:
@@ -1236,20 +1467,34 @@ class NetworkMixin:
     # ── HWID Blacklist ──────────────────────────────────────────
 
     async def get_hwid_blacklist(self) -> List[Dict[str, Any]]:
-        """Get all blacklisted HWIDs."""
+        """Записи чёрного списка HWID со счётчиками по каждой.
+
+        Счётчики считаются здесь, а не на развороте карточки: без них список
+        молчит о главном — сколько аккаунтов на устройстве и не работает ли
+        там прямо сейчас живая подписка, ради которой запись и заводили.
+        """
         async with self.acquire() as conn:
             rows = await conn.fetch(
-                select_sql(HWID_BLACKLIST_TABLE, "*", "ORDER BY created_at DESC")
+                f"""
+                SELECT b.*,
+                       (SELECT COUNT(DISTINCT h.user_uuid)
+                          FROM {USER_HWID_DEVICES_TABLE} h
+                         WHERE h.hwid = b.hwid) AS users_total,
+                       (SELECT COUNT(DISTINCT h.user_uuid)
+                          FROM {USER_HWID_DEVICES_TABLE} h
+                          JOIN {USERS_TABLE} u ON u.uuid = h.user_uuid
+                         WHERE h.hwid = b.hwid
+                           AND u.status = 'ACTIVE'
+                           AND (u.expire_at IS NULL OR u.expire_at > NOW())) AS users_active,
+                       (SELECT COUNT(DISTINCT h.user_uuid)
+                          FROM {USER_HWID_DEVICES_TABLE} h
+                         WHERE h.hwid = b.hwid
+                           AND h.removed_at IS NOT NULL) AS users_removed
+                  FROM {HWID_BLACKLIST_TABLE} b
+                 ORDER BY b.created_at DESC
+                """
             )
             return [dict(r) for r in rows]
-
-    async def get_blacklisted_hwid(self, hwid: str) -> Optional[Dict[str, Any]]:
-        """Check if a specific HWID is blacklisted. Returns the entry or None."""
-        async with self.acquire() as conn:
-            row = await conn.fetchrow(
-                select_sql(HWID_BLACKLIST_TABLE, "*", "WHERE hwid = $1"), hwid
-            )
-            return dict(row) if row else None
 
     async def check_hwids_against_blacklist(self, hwids: List[str]) -> List[Dict[str, Any]]:
         """Check multiple HWIDs against blacklist. Returns matching entries."""
@@ -1294,13 +1539,150 @@ class NetworkMixin:
             )
             return "DELETE 1" in result
 
+    async def get_shared_ip_accounts(
+        self, min_accounts: int = 2, days: int = 30, limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Адреса, с которых за период заходили несколько разных ПРОБНЫХ подписок.
+
+        Считаются только пробные: за адресом домашнего провайдера живёт целая
+        квартира, а за адресом оператора — целый район, поэтому «сколько всего
+        аккаунтов» само по себе ничего не значит. А вот несколько пробных
+        подписок с одного адреса — это уже вопрос.
+
+        Служебные и операторские диапазоны отсекаются: 127.0.0.1 набирает
+        аккаунтов больше любого живого абузера, а 100.64/10 — общий CGNAT
+        мобильного оператора. Метаданные адреса приезжают вместе с выдачей:
+        без ``is_mobile`` отличить абуз от нормального оператора нельзя.
+        """
+        if not self.is_connected:
+            return []
+
+        trial_tags, trial_squads = _load_trial_settings()
+        tags = [t for t in (trial_tags or []) if t]
+        squads = [s for s in (trial_squads or []) if s]
+        if not tags and not squads:
+            return []
+
+        try:
+            async with self.acquire() as conn:
+                rows = await conn.fetch(
+                    f"""
+                    WITH pairs AS (
+                        SELECT c.ip_address,
+                               c.user_uuid,
+                               COUNT(*)              AS conns,
+                               MIN(c.connected_at)   AS first_seen,
+                               MAX(c.connected_at)   AS last_seen
+                          FROM {USER_CONNECTIONS_TABLE} c
+                          JOIN {USERS_TABLE} tu ON tu.uuid = c.user_uuid
+                         WHERE c.connected_at > NOW() - ($2 || ' days')::interval
+                           -- считаем только пробные: на адресе провайдера живёт
+                           -- целый дом, и сам по себе он ни о чём не говорит
+                           AND (
+                               LOWER(COALESCE(tu.tag, '')) = ANY($4::text[])
+                               OR EXISTS (
+                                   SELECT 1
+                                     FROM jsonb_array_elements(
+                                         CASE
+                                             WHEN jsonb_typeof((tu.raw_data::jsonb)->'activeInternalSquads') = 'array'
+                                             THEN (tu.raw_data::jsonb)->'activeInternalSquads'
+                                             ELSE '[]'::jsonb
+                                         END
+                                     ) AS squad(value)
+                                    WHERE LOWER(
+                                        CASE jsonb_typeof(squad.value)
+                                            WHEN 'string' THEN TRIM(BOTH '"' FROM squad.value::text)
+                                            WHEN 'object' THEN COALESCE(squad.value->>'uuid', '')
+                                            ELSE ''
+                                        END
+                                    ) = ANY($5::text[])
+                               )
+                           )
+                           -- служебные и операторские адреса из счёта вон:
+                           -- 127.0.0.1 у нас собирает больше аккаунтов, чем любой
+                           -- реальный абузер, а 100.64/10 — это CGNAT оператора
+                           AND c.ip_address ~ '^[0-9.]+$'
+                           AND NOT (c.ip_address::inet <<= '127.0.0.0/8'
+                                 OR c.ip_address::inet <<= '10.0.0.0/8'
+                                 OR c.ip_address::inet <<= '172.16.0.0/12'
+                                 OR c.ip_address::inet <<= '192.168.0.0/16'
+                                 OR c.ip_address::inet <<= '100.64.0.0/10')
+                         GROUP BY c.ip_address, c.user_uuid
+                    ), shared AS (
+                        SELECT ip_address, COUNT(*) AS accounts
+                          FROM pairs
+                         GROUP BY ip_address
+                        HAVING COUNT(*) >= $1
+                         ORDER BY COUNT(*) DESC
+                         LIMIT $3
+                    )
+                    SELECT s.ip_address::text AS ip,
+                           s.accounts,
+                           p.user_uuid::text  AS user_uuid,
+                           p.conns,
+                           p.first_seen,
+                           p.last_seen,
+                           u.username, u.status, u.telegram_id, u.email,
+                           u.tag, u.expire_at, u.created_at AS user_created_at,
+                           u.raw_data,
+                           m.is_mobile, m.is_proxy, m.is_hosting,
+                           m.asn_org, m.country_code,
+                           (m.ip_address IS NOT NULL) AS metadata_known
+                      FROM shared s
+                      JOIN pairs p ON p.ip_address = s.ip_address
+                      JOIN {USERS_TABLE} u ON u.uuid = p.user_uuid
+                      LEFT JOIN {IP_METADATA_TABLE} m ON m.ip_address = s.ip_address
+                     ORDER BY s.accounts DESC, s.ip_address, p.conns DESC
+                    """,
+                    min_accounts, str(days), limit, tags, squads,
+                )
+
+            groups: Dict[str, Dict[str, Any]] = {}
+            for row in rows:
+                ip = row["ip"]
+                if ip not in groups:
+                    groups[ip] = {
+                        "ip": ip,
+                        "accounts": row["accounts"],
+                        "is_mobile": bool(row["is_mobile"]),
+                        "is_proxy": bool(row["is_proxy"]),
+                        "is_hosting": bool(row["is_hosting"]),
+                        "metadata_known": bool(row["metadata_known"]),
+                        "asn_org": row["asn_org"],
+                        "country_code": row["country_code"],
+                        "users": [],
+                    }
+                groups[ip]["users"].append({
+                    "uuid": row["user_uuid"],
+                    "username": row["username"],
+                    "status": row["status"],
+                    "telegram_id": row["telegram_id"],
+                    "email": row["email"],
+                    "expire_at": row["expire_at"],
+                    "created_at": row["user_created_at"],
+                    "conns": row["conns"],
+                    "first_seen": row["first_seen"],
+                    "last_seen": row["last_seen"],
+                    "is_trial": _is_trial_user(row["tag"], row["raw_data"], trial_tags, trial_squads),
+                    "is_active": _subscription_is_active(row["expire_at"], row["status"]),
+                })
+            return list(groups.values())
+
+        except Exception as e:
+            logger.error("Error getting shared IP accounts: %s", e, exc_info=True)
+            return []
+
     async def find_users_by_hwid(self, hwid: str) -> List[Dict[str, Any]]:
         """Find all users that have a specific HWID."""
         async with self.acquire() as conn:
             rows = await conn.fetch(
                 f"""
-                SELECT h.user_uuid, u.username, u.status, h.platform, h.device_model,
-                       h.created_at as hwid_first_seen, h.updated_at as hwid_last_seen
+                SELECT h.user_uuid, u.username, u.status, u.expire_at, u.telegram_id,
+                       h.platform, h.device_model,
+                       h.created_at as hwid_first_seen, h.updated_at as hwid_last_seen,
+                       -- в выдаче и те, кто устройство уже отвязал: блеклист
+                       -- ставят на железо, а уход с него — часть схемы обхода
+                       h.removed_at
                 FROM {USER_HWID_DEVICES_TABLE} h
                 LEFT JOIN {USERS_TABLE} u ON u.uuid = h.user_uuid
                 WHERE h.hwid = $1

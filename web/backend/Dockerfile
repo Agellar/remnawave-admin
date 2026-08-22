@@ -22,6 +22,18 @@ RUN pip install --no-cache-dir -r /app/web/backend/requirements.txt
 COPY shared/ /app/shared/
 COPY web/backend/ /app/web/backend/
 
+# Agellar production plugins are baked into the immutable backend image.
+# Keeping them out of a mutable bind mount makes the image tag a complete
+# rollback unit. RWA_DEV_PLUGINS_PREFER also keeps an uploaded wheel with the
+# same plugin id from silently replacing an audited local implementation.
+COPY plugins-src/rwa_incident_hub/ /app/rwa_incident_hub/
+COPY plugins-src/rwa_local_block_radar/ /app/rwa_local_block_radar/
+COPY plugins-src/rwa_retention_radar/ /app/rwa_retention_radar/
+COPY plugins-src/rwa_smart_support/ /app/rwa_smart_support/
+COPY plugins-src/rwa_live_flow/ /app/rwa_live_flow/
+ENV RWA_DEV_PLUGINS="rwa_smart_support.plugin:manifest,rwa_retention_radar.plugin:manifest,rwa_local_block_radar.plugin:manifest,rwa_incident_hub.plugin:manifest,rwa_live_flow:manifest"
+ENV RWA_DEV_PLUGINS_PREFER="true"
+
 # Copy VERSION file from repo (updated at release time)
 COPY VERSION /app/VERSION
 # Optional: override version at build time via --build-arg

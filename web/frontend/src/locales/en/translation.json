@@ -213,7 +213,16 @@
     "logout": "Logout",
     "logoutConfirmTitle": "Log out of the panel?",
     "logoutConfirmDescription": "You'll need to sign in again. Any unsaved changes will be lost.",
-    "toggleCollapse": "Toggle sidebar"
+    "toggleCollapse": "Toggle sidebar",
+    "customize": {
+      "button": "Customize menu",
+      "title": "Menu order",
+      "description": "Drag an entry by the handle on the left — the menu updates instantly.",
+      "hint": "A section header moves together with its entries. The order is stored in this browser.",
+      "drag": "Drag to reorder",
+      "reset": "Reset",
+      "done": "Done"
+    }
   },
   "commandPalette": {
     "placeholder": "Search pages, users, actions...",
@@ -870,6 +879,10 @@
       "app": "App",
       "userAgent": "User Agent",
       "added": "Added",
+      "removedAt": "Unlinked",
+      "tabActive": "Current",
+      "tabRemoved": "Removed",
+      "removedHint": "Previously present on this account but were removed. The records are kept so that re-linking the same device to another account stays visible.",
       "uaBadge": {
         "linkInUa": "Double tunnel",
         "botLibrary": "Bot/script",
@@ -1581,7 +1594,8 @@
       "addedBy": "Added By",
       "created": "Date",
       "expires": "Expires",
-      "actions": "Actions"
+      "actions": "Actions",
+      "affects": "Affects"
     },
     "durations": {
       "forever": "Forever",
@@ -1611,7 +1625,32 @@
     "deleteDialog": {
       "title": "Remove block",
       "description": "Remove block for {{ip}}?"
-    }
+    },
+    "stats": {
+      "total": "Entries total",
+      "forever": "Permanent",
+      "temporary": "Temporary",
+      "affecting": "Affecting someone"
+    },
+    "sort": {
+      "recent": "Newest first",
+      "oldest": "Oldest first",
+      "accounts": "Most accounts",
+      "expiring": "Expiring soon"
+    },
+    "searchPlaceholder": "Search by address, reason or provider",
+    "affectedUsers": "Connected from this address ({{count}})",
+    "noUsers": "No connections from this address",
+    "noUsersHint": "Nobody connected from this address in the last month — the block currently affects no one.",
+    "trialLabel": "trial",
+    "trialsBadge_one": "{{count}} trial",
+    "trialsBadge_few": "{{count}} trials",
+    "trialsBadge_many": "{{count}} trials",
+    "trialsBadge_other": "{{count}} trials",
+    "connsShort_one": "{{count}} connection",
+    "connsShort_few": "{{count}} connections",
+    "connsShort_many": "{{count}} connections",
+    "connsShort_other": "{{count}} connections"
   },
   "violations": {
     "title": "Violations",
@@ -1650,11 +1689,14 @@
       "lastActivityTooltip": "Most recent appearance of this HWID on a new account",
       "overThresholdBadge": "≥{{thr}} → ban",
       "overThresholdTooltip": "Account count has reached the hard-block threshold ({{thr}}) — the next violation gets hard_block",
+      "trialAbuseBadge": "{{count}} live trials → ban",
+      "trialAbuseTooltip": "More distinct accounts with a live trial than the threshold ({{thr}}) — this is trial farming, the violation gets hard_block",
       "stats": {
         "groups": "Devices",
         "accounts": "Accounts",
         "withActive": "With active",
-        "overThreshold": "Over ban threshold ({{thr}}+)"
+        "overThreshold": "Over ban threshold ({{thr}}+)",
+        "trialAbuse": "Trial farming (>{{thr}} live)"
       },
       "sort": {
         "accounts": "By accounts",
@@ -1860,7 +1902,29 @@
       "added": "HWID added to blacklist. Affected users: {{count}}",
       "removed": "HWID removed from blacklist",
       "affectedUsers": "Users with this HWID ({{count}})",
-      "noUsers": "No users found with this HWID"
+      "noUsers": "No users found with this HWID",
+      "noUsersHint": "The device may have been unlinked before the entry was added — then nothing was left to find. Unlinks that happen from now on are kept.",
+      "nothingFound": "Nothing found",
+      "searchPlaceholder": "Search by HWID or reason",
+      "unlinked": "unlinked",
+      "badgeLive_one": "{{count}} with a live subscription",
+      "badgeLive_few": "{{count}} with live subscriptions",
+      "badgeLive_many": "{{count}} with live subscriptions",
+      "badgeLive_other": "{{count}} with live subscriptions",
+      "badgeUnlinked_one": "{{count}} unlinked",
+      "badgeUnlinked_few": "{{count}} unlinked",
+      "badgeUnlinked_many": "{{count}} unlinked",
+      "badgeUnlinked_other": "{{count}} unlinked",
+      "stats": {
+        "total": "Entries total",
+        "live": "With a live subscription"
+      },
+      "sort": {
+        "recent": "Newest first",
+        "oldest": "Oldest first",
+        "users": "Most accounts",
+        "active": "Live subscriptions"
+      }
     },
     "analyzers": {
       "temporal": "Temporal (simultaneous connections)",
@@ -3642,9 +3706,25 @@
         "label": "📏 Max inter-city distance (km)",
         "description": "Distance between cities below which movement is not considered suspicious"
       },
+      "violations_geo_max_simultaneous_countries": {
+        "label": "🌍 Max simultaneous countries",
+        "description": "How many countries may be active at once without a violation. IP geolocation is approximate, and one subscription is often shared across a family and several devices. 0 = derive the allowance from the observed device count"
+      },
+      "violations_profile_unusual_hour_enabled": {
+        "label": "🕒 Unusual connection time",
+        "description": "Use connections outside the usual hours as a weak signal. Disabled by default because this pattern creates frequent false positives"
+      },
       "violations_hwid_max_accounts": {
         "label": "👥 Max accounts per HWID",
-        "description": "Number of accounts sharing one HWID that triggers a violation (default 2)"
+        "description": "How many distinct accounts may share one HWID WITHOUT triggering — a violation starts at the next account (value 2 → fires on the third). Subscriptions of the same person count as one account: grouped by telegram_id, or by email when the user signed up without Telegram"
+      },
+      "violations_hwid_max_active_trials": {
+        "label": "🎁 Max active trials per HWID",
+        "description": "How many distinct accounts with a LIVE trial subscription may share one device without triggering. Catches trial farming via fresh accounts while ignoring both the normal «trial expired → paid plan purchased» upgrade and two paying people sharing a device. Trial status is determined by the tag and internal squad settings below. 0 = disabled"
+      },
+      "violations_hwid_max_trial_subs": {
+        "label": "♻️ Max trial subscriptions per account per HWID",
+        "description": "How many times one person may take a trial from the same device — counting expired and disabled ones. Closes the workaround where a second trial is taken on a fresh subscription with the same telegram_id linked to it: to every other check that is one account with one live trial. Ignores both the «trial → paid» upgrade and two different people sharing a tablet. 0 = disabled"
       },
       "violations_mobile_cgnat_buffer": {
         "label": "📱 Mobile CGNAT buffer (IPs)",
@@ -3818,9 +3898,281 @@
         "label": "🔄 Sync interval (hours)",
         "description": "How often to refresh blacklists from external URLs."
       },
+      "violations_ip_trial_guard_enabled": {
+        "label": "🌐 IP guard: repeated trials",
+        "description": "Spot addresses used for several trial subscriptions by different accounts. HWID is announced by the client itself and forged with a header, while an address comes from the provider and is harder to change. Private, mobile, hosting/proxy and not-yet-classified addresses are excluded by default"
+      },
+      "violations_ip_trial_accounts": {
+        "label": "🌐 Trial subscriptions per address",
+        "description": "How many distinct trial subscriptions may share one address without an alert. Only trials count: a home provider address covers a whole flat"
+      },
+      "violations_ip_trial_accounts_mobile": {
+        "label": "📱 Same for mobile addresses",
+        "description": "A separate threshold for mobile carrier addresses. CGNAT puts a whole district behind one address, so several people with trials there is ordinary"
+      },
+      "violations_ip_trial_window_days": {
+        "label": "🌐 Address lookup window (days)",
+        "description": "How far back connections are counted. Too wide a window picks up dynamic addresses that changed hands between subscribers"
+      },
+      "violations_ip_trial_repeat_hours": {
+        "label": "🌐 Silence per address (hours)",
+        "description": "How long to stay quiet about an address after reporting it"
+      },
+      "violations_ip_trial_interval_minutes": {
+        "label": "🌐 Address guard interval (min)",
+        "description": "How often addresses are re-checked. Heavier than the HWID guard: it groups connection history over the whole window"
+      },
+      "hwid_blacklist_guard_enabled": {
+        "label": "🛡️ HWID blacklist guard",
+        "description": "Periodically check whether a subscription came back to life for anyone seen on a blacklisted device, and disable it again. Blacklist blocking happens once, while a subscription can be revived afterwards — linking a telegram_id to an email-created one already did it. Entries set to «alert» are only reported, never disabled"
+      },
+      "hwid_blacklist_guard_interval_minutes": {
+        "label": "🛡️ HWID guard interval (min)",
+        "description": "How often the guard walks the HWID blacklist. A shorter interval means a shorter window for a revived subscription to stay usable"
+      },
       "user_blacklist_auto_block": {
         "label": "⚡ Auto-block",
         "description": "Automatically block blacklisted users via Panel API. When disabled — notification only."
+      },
+      "web_session_access_minutes": {
+        "label": "Access token lifetime (minutes)",
+        "description": "Lifetime of the web panel access token. Applies to new logins and refreshes. Recommended: 30-120 min"
+      },
+      "web_session_refresh_hours": {
+        "label": "Session lifetime (hours)",
+        "description": "Total session lifetime (refresh token). While it is valid the user stays signed in; after that a new login with 2FA is required. Recommended: 12-24h"
+      },
+      "finance_base_currency": {
+        "label": "Reporting currency",
+        "description": "Currency that aggregates are converted into (RUB, USD, EUR...)"
+      },
+      "finance_rates_auto_update": {
+        "label": "Auto-update exchange rates",
+        "description": "Refresh rates once a day (CBR, falling back to open.er-api.com). Manually edited rates are left alone"
+      },
+      "finance_reminders_enabled": {
+        "label": "Payment reminders",
+        "description": "Send notifications about upcoming and overdue payments to Telegram and the panel"
+      },
+      "finance_reminder_days": {
+        "label": "Remind this many days ahead",
+        "description": "Comma-separated list of days before the charge (for example 7,3,1). Overdue payments are always reminded about"
+      },
+      "finance_autosync_enabled": {
+        "label": "Auto-sync hosting provider APIs",
+        "description": "Periodically pull balance and services from connected hosting provider APIs"
+      },
+      "finance_autosync_interval_hours": {
+        "label": "Auto-sync interval (hours)",
+        "description": "How often to poll provider APIs for balance, services and charge dates"
+      },
+      "finance_autosync_update_due_dates": {
+        "label": "Pull charge dates",
+        "description": "Update next_due_at from provider data, matching services by name within a provider"
+      },
+      "finance_bedolaga_deposits_enabled": {
+        "label": "Record Bedolaga top-ups",
+        "description": "Add balance top-ups from Bedolaga to income daily (P&L chart, monthly revenue). Do not combine with manual subscription revenue import — it would be counted twice"
+      },
+      "dns_creds_cloudflare": {
+        "label": "DNS: Cloudflare (encrypted)",
+        "description": "Managed on the DNS page, not here"
+      },
+      "dns_creds_timeweb": {
+        "label": "DNS: Timeweb Cloud (encrypted)",
+        "description": "Managed on the DNS page, not here"
+      },
+      "dns_creds_regru": {
+        "label": "DNS: reg.ru (encrypted)",
+        "description": "Managed on the DNS page, not here"
+      },
+      "dns_creds_selectel": {
+        "label": "DNS: Selectel (encrypted)",
+        "description": "Managed on the DNS page, not here"
+      },
+      "dns_creds_aeza": {
+        "label": "DNS: Aeza (encrypted)",
+        "description": "Managed on the DNS page, not here"
+      },
+      "bscheck_token": {
+        "label": "BS-Check: bschekbot token (encrypted)",
+        "description": "The bsk_live_ token (bsbord) used to test nodes through mobile carriers. Edited on the nodes page"
+      },
+      "reputation_ipinfo_token": {
+        "label": "Reputation: ipinfo.io token (encrypted)",
+        "description": "Managed on the BS-Check page"
+      },
+      "reputation_ipqs_token": {
+        "label": "Reputation: IPQualityScore token (encrypted)",
+        "description": "Managed on the BS-Check page"
+      },
+      "reputation_abuseipdb_token": {
+        "label": "Reputation: AbuseIPDB token (encrypted)",
+        "description": "Managed on the BS-Check page"
+      },
+      "oauth_google_client_id": {
+        "label": "OAuth: Google client_id",
+        "description": "Managed in the OAuth settings"
+      },
+      "oauth_google_client_secret": {
+        "label": "OAuth: Google secret (encrypted)",
+        "description": "Managed in the OAuth settings"
+      },
+      "oauth_github_client_id": {
+        "label": "OAuth: GitHub client_id",
+        "description": "Managed in the OAuth settings"
+      },
+      "oauth_github_client_secret": {
+        "label": "OAuth: GitHub secret (encrypted)",
+        "description": "Managed in the OAuth settings"
+      },
+      "oauth_oidc_client_id": {
+        "label": "OAuth: OIDC client_id",
+        "description": "Managed in the OAuth settings"
+      },
+      "oauth_oidc_client_secret": {
+        "label": "OAuth: OIDC secret (encrypted)",
+        "description": "Managed in the OAuth settings"
+      },
+      "oauth_oidc_issuer": {
+        "label": "OAuth: OIDC issuer URL",
+        "description": "Managed in the OAuth settings"
+      },
+      "oauth_oidc_name": {
+        "label": "OAuth: OIDC button label",
+        "description": "Managed in the OAuth settings"
+      },
+      "backup_auto_enabled": {
+        "label": "Scheduled backup",
+        "description": "Create a database backup automatically on a schedule"
+      },
+      "backup_auto_time": {
+        "label": "Backup time",
+        "description": "Time of the daily backup (HH:MM UTC)"
+      },
+      "backup_auto_telegram": {
+        "label": "Send to Telegram",
+        "description": "Send the created backup to Telegram (chat_id from the notification settings)"
+      },
+      "backup_auto_keep_count": {
+        "label": "Keep backups (count)",
+        "description": "How many recent automatic backups to keep"
+      },
+      "backup_auto_keep_days": {
+        "label": "Keep backups (days)",
+        "description": "Maximum age of automatic backups in days"
+      },
+      "backup_auto_interval_hours": {
+        "label": "Backup interval (hours)",
+        "description": "0 — once a day at the configured time; N>0 — every N hours starting from that time"
+      },
+      "backup_auto_config": {
+        "label": "Back up the config",
+        "description": "Store panel settings alongside the database backup"
+      },
+      "backup_deadman_hours": {
+        "label": "Alert if no backup for N hours",
+        "description": "Send an alert when there has been no successful backup for longer than N hours (0 = off)"
+      },
+      "violations_hwid_max_per_account": {
+        "label": "Max subscriptions per account on one HWID",
+        "description": "How many panel UUIDs (subscriptions) of a single telegram_id are allowed on one HWID. Guards against multi-plan abuse. 0 = unlimited"
+      },
+      "violation_check_cooldown_minutes": {
+        "label": "Check cooldown (min)",
+        "description": "Minimum interval between repeated detector checks of the same user (load throttling). Not the same as the notification cooldown"
+      },
+      "violation_retention_days": {
+        "label": "Violation retention (days)",
+        "description": "How many days violation records are kept before automatic cleanup"
+      },
+      "connections_retention_days": {
+        "label": "Connection retention (days)",
+        "description": "How many days the user connection history is kept before automatic cleanup"
+      },
+      "ndpi_detection_enabled": {
+        "label": "Torrent detection via nDPI",
+        "description": "Xray only recognises BitTorrent by the plaintext handshake, so encrypted streams, DHT and uTP slip past. nDPI sees those too. Requires the nDPId daemon on the node: the setting is pushed to agents as a command, no .env editing needed"
+      },
+      "torrent_retention_days": {
+        "label": "Torrent event retention (days)",
+        "description": "How many days recorded torrent events are kept before automatic cleanup"
+      },
+      "violations_hwid_scan_interval_minutes": {
+        "label": "HWID scan interval (min)",
+        "description": "How often offline users sharing a HWID are checked for cross-account abuse (the batch detector only sees users who are online)"
+      },
+      "mailserver_tls_cert_path": {
+        "label": "TLS certificate path",
+        "description": "Certificate for STARTTLS on the mail ports. Empty means a self-signed one is issued: enough for receiving mail, but mail clients on port 587 will complain"
+      },
+      "mailserver_tls_key_path": {
+        "label": "TLS key path",
+        "description": "Private key for the certificate above"
+      },
+      "mailserver_tls_hostname": {
+        "label": "Mail server hostname",
+        "description": "How the server introduces itself over SMTP and what the certificate is issued for. Should match the PTR record of the IP. Empty means mail.<first domain>"
+      },
+      "mailserver_submission_require_tls": {
+        "label": "Require TLS on port 587",
+        "description": "Refuse logins over an unencrypted connection. Clients from private networks (10.x, 192.168.x, 100.64.x such as Netbird) are exempt: that traffic is already inside a tunnel. Only effective once a certificate exists"
+      },
+      "mailserver_spam_threshold": {
+        "label": "Spam threshold",
+        "description": "Score at which a message is marked suspicious. 5 points means the domain published a DMARC policy and the message failed it"
+      },
+      "mailserver_reject_spam": {
+        "label": "Reject suspicious messages",
+        "description": "Refuse messages that reach the threshold at reception. When off, the message is accepted but flagged in the list"
+      },
+      "mailserver_inbox_retention_days": {
+        "label": "Keep inbound mail, days",
+        "description": "After how many days received messages are deleted. 0 = keep forever"
+      },
+      "mailserver_queue_retention_days": {
+        "label": "Keep sending history, days",
+        "description": "After how many days sent and rejected messages leave the queue. Messages still waiting to be sent are untouched. 0 = keep forever"
+      },
+      "mailserver_notify_new_mail": {
+        "label": "Notify about new mail",
+        "description": "Send a notification when a message arrives, excluding service mail: bounces, unsubscribes and DMARC reports"
+      },
+      "violation_dedup_window_hours": {
+        "label": "Record deduplication window (hours)",
+        "description": "While a user has an unresolved violation newer than this window, repeated detections do not create a new record unless the score is higher. 0 disables deduplication"
+      },
+      "violation_auto_hard_block": {
+        "label": "Auto-block on hard_block",
+        "description": "Disable the user through the Panel API when the detector recommends a hard block. When off, only a notification and a record are produced"
+      },
+      "attack_detect_enabled": {
+        "label": "Node attack detection",
+        "description": "Watch node network metrics and warn when a node is under attack. Requires agent 1.3.0 or newer"
+      },
+      "attack_pps_ratio": {
+        "label": "Packet threshold (x normal)",
+        "description": "How many times the inbound packet rate must exceed the usual level for this node. Below 3 you will get false alarms on evening peaks"
+      },
+      "attack_bps_ratio": {
+        "label": "Traffic threshold (x normal)",
+        "description": "The same for inbound traffic volume — catches attacks made of large packets"
+      },
+      "attack_min_pps": {
+        "label": "Minimum packets/s to alert",
+        "description": "Below this a spike is ignored: on an idle night-time node a tenfold rise is just noise"
+      },
+      "attack_min_bps": {
+        "label": "Minimum bytes/s to alert",
+        "description": "The same for volume. The default 12,500,000 is 100 Mbit/s"
+      },
+      "attack_min_samples": {
+        "label": "Samples for the baseline",
+        "description": "How many samples to collect before trusting the usual level of a node. Until then the detector stays quiet"
+      },
+      "attack_small_packet_bytes": {
+        "label": "Small packet, bytes",
+        "description": "An average packet size below this is treated as a sign of flooding: useful traffic is made of bigger packets"
       }
     },
     "inDb": "In DB",
@@ -4366,6 +4718,21 @@
     "uuid": "UUID:"
   },
   "bscheck": {
+    "upstreamErrorTitle": "bschekbot unavailable",
+    "upstreamError": "bschekbot: {{error}}",
+    "dpiShort": {
+      "on": "Whitelist only",
+      "any": "Any",
+      "off": "Without whitelist"
+    },
+    "bsOffWarn": "Mode «without whitelist»: units with the whitelist off are used — shows the target on a channel with no operator filter.",
+    "cancelScan": "Stop",
+    "cancelVless": "Stop",
+    "scanCancelled": "Scan stopped: {{done}} of {{total}} addresses checked, billed proportionally",
+    "vlessCancelled": "Test stopped, {{refunded}} credits refunded",
+    "coreAuto": "Auto",
+    "usedCore": "core: {{core}}",
+    "coreRequested": "requested: {{core}}",
     "title": "BS-Check",
     "subtitle": "Test nodes through RU operators — does the IP pass whitelists / DPI (bschekbot)",
     "connectTitle": "Connect bschekbot",
@@ -4390,8 +4757,8 @@
     "operators": "Operators",
     "operatorsHint": "Empty = all available. ⚠ — operator without BS (result misleading)",
     "lockBs": "BS only",
-    "lockBsHint": "Probe only operators with whitelists on (DPI_ON). Those with BS currently off are skipped — their result is misleading.",
-    "bsAnyWarn": "\"No-BS\" mode: probes also go through operators without whitelists — misleading result, wasted credits.",
+    "lockBsHint": "Probe only units with the whitelist on. Those with it currently off are skipped — their result is misleading.",
+    "bsAnyWarn": "Mode «any»: both units with the whitelist and without it are probed. More checks — bigger charge.",
     "bsOff": "BS off",
     "bsOffCount": "Off now: {{count}}",
     "refreshOps": "Status",
@@ -5654,6 +6021,7 @@
       "pip_install_failed": "pip failed to install the package — check backend logs"
     },
     "free": "Free",
+    "free_hint": "no subscription needed",
     "pick_paid": "Choose a paid plan",
     "plan": "Plan"
   },
@@ -5692,6 +6060,11 @@
         "false_positive": "False positive",
         "unclear": "Unclear"
       }
+    },
+    "external": {
+      "loading": "Loading the plugin interface…",
+      "no_ui": "This plugin does not provide a page",
+      "failed": "Could not load the plugin interface"
     },
     "block_radar": {
       "reachability": {
@@ -5766,6 +6139,11 @@
       "expiry_hint": "After that, data collection and network-confirmed incidents stop. Renew on the Plugins page.",
       "dips_title": "Online drops on nodes",
       "dip_badge": "Online drop",
+      "self_badge": "Only you",
+      "self_title": "Your online dropped — your neighbours' did not",
+      "self_yours": "Yours now / usually",
+      "self_neighbours": "Neighbours ({{n}}) now / usually",
+      "self_hint": "Same operators, same hoster, same transport — so none of them is to blame. Check your own domain, node address and certificate.",
       "dip_share": "Share / usual",
       "dip_alive": "Node is connected — looks like a network issue or a blocked address.",
       "dip_offline": "Node is offline — check the node itself first.",
@@ -5810,6 +6188,14 @@
           "insufficient_data": "insufficient data"
         }
       },
+      "feedback_prompt": "Was it a block?",
+      "feedback_yes": "Yes, blocked",
+      "feedback_no": "False positive",
+      "feedback_marked_yes": "Marked: it was a block",
+      "feedback_marked_no": "Marked: false positive",
+      "feedback_hint": "Your answer goes to the panel network and tunes detector accuracy.",
+      "feedback_failed": "Could not save the mark",
+      "col_feedback": "Mark",
       "status": {
         "title": "Collector",
         "never": "The collector has not completed a tick yet — data appears within a couple of minutes after install.",
@@ -5940,9 +6326,11 @@
         "nodes_active": "active now",
         "nodes_online": "online",
         "nodes_offline": "offline",
-        "correlations_empty": "No correlations yet — the background worker isn't running or no patterns matched.",
+        "correlations_empty": "No mass incidents in the last few hours — neither on the user's nodes nor at their provider.",
         "correlations_affected": "affected: {{n}}",
         "correlations_window": "in the last {{minutes}} min",
+        "correlations_stale": "ended {{minutes}} min ago",
+        "correlations_active": "ongoing",
         "violations_empty": "No violations recorded in the last 14 days.",
         "sections": {
           "user": "Subscription & user",
@@ -5991,7 +6379,8 @@
             "switch_node": "Switch node",
             "extend_subscription": "Extend subscription",
             "reset_traffic": "Reset traffic",
-            "notify_update": "Notify about update"
+            "notify_update": "Notify about update",
+            "notify_battery_optimization": "Notify about battery optimization"
           }
         },
         "loading": {
@@ -6009,7 +6398,8 @@
           "copy": "Copy",
           "hint": "Model-generated. Read it before sending — the wording is on you, not on the model."
         },
-        "incident_hint": "This is likely a shared service issue rather than a user device problem."
+        "incident_hint": "This is likely a shared service issue rather than a user device problem.",
+        "crumb": "Report"
       },
       "feedback": {
         "correct": "Correct",
@@ -6113,18 +6503,25 @@
           "ai": "AI analysis"
         },
         "ai": {
-          "enabled": "Enable cloud AI analysis in reports",
-          "cloud_hint": "Analysis runs on the cloud core: no provider keys needed, calls are drawn from the subscription quota.",
-          "subscription": "Subscription",
-          "sub_state": {
-            "active": "active",
-            "grace": "grace period",
-            "expired": "expired",
-            "missing": "none"
+          "enabled": "Enable AI analysis in reports",
+          "own_key_hint": "Analysis runs on your own provider key — no subscription needed. Without a key the report still works, just without the AI section.",
+          "no_keys_warning": "AI is on, but no key is set — there will be no analysis.",
+          "chain_hint": "Providers in order: if the first hits its limit, the next one is called",
+          "key": "API key",
+          "key_set": "key saved — enter a new one to replace",
+          "key_empty": "no key set",
+          "clear": "Clear",
+          "model": "Model",
+          "model_default": "default",
+          "move_up": "Move up the chain",
+          "move_down": "Move down the chain",
+          "state": {
+            "ready": "ready",
+            "no_key": "no key",
+            "cooldown": "paused {{n}}s"
           },
-          "quota": "Call quota",
-          "quota_topup": "+{{n}} topped up",
-          "manage": "Manage subscription and quota →"
+          "outage_lookup": "Check for outages at the client's ISP",
+          "outage_hint": "IODA (Georgia Tech/CAIDA), free and key-less: tells whether the subscriber's own network is down."
         },
         "fields": {
           "node_cpu_high": {
@@ -6187,6 +6584,51 @@
             "label": "Cache TTL, min",
             "help": "Older clusters are not surfaced in reports even if still in DB."
           }
+        }
+      },
+      "clients": {
+        "title": "Client reference",
+        "subtitle": "Current app versions and known bugs, shared by every panel. This is what the report compares the client version against.",
+        "back": "Back to search",
+        "queue": "Proposed changes",
+        "queue_empty": "No open proposals",
+        "decided": "Decided ({{n}})",
+        "reference": "Reference",
+        "reference_empty": "The reference is empty",
+        "propose": "Propose a change",
+        "propose_title": "Reference change",
+        "propose_hint": "Other panels will see the proposal and either confirm it or object. It reaches the reference after the server owner reviews it.",
+        "proposed": "Proposal sent",
+        "propose_failed": "Could not send the proposal",
+        "vote_failed": "Vote was not counted",
+        "send": "Send",
+        "app_id": "App identifier",
+        "app_id_hint": "How the app is detected from the User-Agent: Happ, v2rayNG, V2rayTun.",
+        "latest_version": "Current version",
+        "ambiguous_label": "Builds are numbered differently — don't compare versions",
+        "ambiguous": "version not compared",
+        "no_version": "version unknown",
+        "bug_title": "What breaks",
+        "version_min": "From version",
+        "version_max": "To version",
+        "workaround": "What helps",
+        "comment": "Comment",
+        "version": "version",
+        "issues": "bugs: {{n}}",
+        "fix_version": "Version",
+        "report_bug": "Bug",
+        "mine": "mine",
+        "agree": "Agree",
+        "disagree": "Disagree",
+        "agree_count": "agree: {{n}}",
+        "votes_hint": "How many panels confirmed the change",
+        "kind": {
+          "app": "app version",
+          "issue": "version bug"
+        },
+        "status": {
+          "accepted": "accepted",
+          "rejected": "rejected"
         }
       }
     },

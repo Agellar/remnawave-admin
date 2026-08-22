@@ -64,8 +64,10 @@ def test_manifest_uses_builtin_block_radar_ui_without_license():
     item = manifest()
     assert item.id == "block_radar"
     assert item.billing == "free"
-    assert item.version == "0.6.0"
+    assert item.version == "0.7.3"
+    assert "edit" in item.rbac_resources["block_radar"]
     assert item.navigation[0].path == "/plugins/block-radar"
+    assert item.navigation[0].permission == ("block_radar", "view")
     assert {task.name for task in item.build(type("Ctx", (), {})()).scheduled_tasks} == {
         "local-radar", "globalping"
     }
@@ -86,6 +88,8 @@ def test_probe_schedule_is_safe_for_api_output():
 def test_schema_prevents_duplicate_open_incidents():
     assert "local_block_radar_one_open_alert_idx" in store.DDL
     assert "WHERE resolved_at IS NULL" in store.DDL
+    assert "feedback TEXT" in store.DDL
+    assert "feedback_at TIMESTAMPTZ" in store.DDL
 
 
 def test_ai_schema_and_prompt_are_infrastructure_only():
@@ -141,10 +145,32 @@ def test_alert_api_decodes_jsonb_ai_arrays():
         "ai_model": "claude-sonnet-4-6",
         "ai_created_at": now,
         "ai_updated_at": now,
+        "feedback": "false_positive",
+        "feedback_at": now,
     }
     item = _alert(row)
     assert item["ai_analysis"]["evidence"] == ["one"]
     assert item["ai_analysis"]["recommendations"] == ["two"]
+    assert item["feedback"] == "false_positive"
+    assert item["feedback_at"] == now.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_feedback_update_is_parameterized():
+    db = AsyncMock()
+    now = datetime.now(timezone.utc)
+    db.fetchrow.return_value = {
+        "id": 11,
+        "feedback": "confirmed",
+        "feedback_at": now,
+    }
+    result = await store.set_feedback(db, 11, "confirmed")
+    query, alert_id, verdict = db.fetchrow.await_args.args
+    assert "WHERE id=$1" in query
+    assert "feedback=$2" in query
+    assert alert_id == 11
+    assert verdict == "confirmed"
+    assert result["feedback"] == "confirmed"
 
 
 @pytest.mark.asyncio

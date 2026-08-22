@@ -252,6 +252,10 @@ class TorrentEventReport(BaseModel):
     outbound_tag: str = "TORRENT"
     node_uuid: str
     detected_at: datetime
+    # Чем поймали: тег роутинга Xray (только открытое рукопожатие
+    # BitTorrent) или вердикт nDPI (видит и шифрованный поток, DHT, uTP).
+    # Агенты постарше поля не шлют — им остаётся прежний источник.
+    detected_by: str = "xray_routing"
 
 
 class BatchReport(BaseModel):
@@ -636,6 +640,7 @@ async def receive_connections(
                         "inbound_tag": event.inbound_tag,
                         "outbound_tag": event.outbound_tag,
                         "detected_at": event.detected_at,
+                        "detected_by": event.detected_by,
                     })
                 except Exception as e:
                     logger.warning("Error resolving torrent event for %s: %s", event.user_email, e)
@@ -917,13 +922,26 @@ async def _run_violation_detection(affected_user_uuids: set):
                 bl_matches = await db_service.check_hwids_against_blacklist(list(all_hwids))
                 if bl_matches:
                     from web.backend.api.v2.violations import _handle_blacklisted_hwid_users
+                    matched_uids = {
+                        uid for m in bl_matches for uid in hwid_to_users.get(m["hwid"], [])
+                    }
+                    # Статусы и имена одним запросом: без них в уведомление уходит
+                    # голый UUID, а уже отключённые попадают в него снова и снова
+                    bl_users = await db_service.batch_get_users_info(list(matched_uids))
                     for match in bl_matches:
-                        affected_uids = hwid_to_users.get(match["hwid"], [])
-                        for uid in affected_uids:
-                            user_entry = [{"user_uuid": uid, "username": None}]
+                        affected = []
+                        for uid in hwid_to_users.get(match["hwid"], []):
+                            info = bl_users.get(uid) or {}
+                            # Юзер уже отключён — мера принята, повторять нечего.
+                            # Скан ходит каждые 30 минут, и без этой отсечки он
+                            # рапортует об одном и том же до скончания века
+                            if str(info.get("status") or "").upper() == "DISABLED":
+                                continue
+                            affected.append({"user_uuid": uid, "username": info.get("username")})
+                        if affected:
                             await _handle_blacklisted_hwid_users(
                                 match["hwid"], match["action"],
-                                match.get("reason"), user_entry,
+                                match.get("reason"), affected,
                             )
         except Exception as e:
             logger.debug("Batch HWID blacklist check failed: %s", e)
@@ -1004,6 +1022,7 @@ async def _handle_violation(
         except Exception as geo_error:
             logger.warning("GeoIP lookup failed for user %s: %s", user_uuid, geo_error)
 
+    notification_sent = False
     if not is_whitelisted:
         try:
             from web.backend.core.violation_notifier import send_violation_notification
@@ -1020,6 +1039,7 @@ async def _handle_violation(
                 active_connections=active_conns,
                 ip_metadata=ip_metadata,
             )
+            notification_sent = True
         except Exception as notify_error:
             logger.warning("Failed to send violation notification for user %s: %s", user_uuid, notify_error)
 
@@ -1082,6 +1102,15 @@ async def _handle_violation(
             logger.debug("Violation deduplicated for user %s (id=%s)", user_uuid, violation_id)
             return
 
+        if notification_sent and violation_id:
+            # Уведомление уходит до сохранения (id ещё нет), поэтому отметка ставится
+            # здесь. Без неё кулдаун повторных уведомлений считает, что юзеру ещё
+            # ничего не отправляли: он берёт MAX(notified_at) по пользователю.
+            try:
+                await db_service.mark_violation_notified(violation_id)
+            except Exception as mark_error:
+                logger.warning("Failed to mark violation %s as notified: %s", violation_id, mark_error)
+
         fire_event("violation.created", {
             "violation_id": violation_id,
             "user_uuid": user_uuid,
@@ -1097,9 +1126,11 @@ async def _handle_violation(
         from shared.violation_detector import ViolationAction
         if violation_score.recommended_action == ViolationAction.HARD_BLOCK:
             if config_service.get("violation_auto_hard_block", True):
+                from shared.api_client import api_client
+                blocked_count = 0
                 try:
-                    from shared.api_client import api_client
                     await api_client.disable_user(await _resolve_user_key(user_uuid))
+                    blocked_count += 1
                     logger.warning("Auto-blocked user %s score=%.1f", user_uuid[:8], violation_score.total)
                     fire_event("user.blocked", {
                         "uuid": user_uuid,
@@ -1111,6 +1142,55 @@ async def _handle_violation(
                     })
                 except Exception as block_error:
                     logger.warning("Failed to auto-block user %s: %s", user_uuid, block_error)
+
+                # Соучастники накрутки триалов блокируются вместе с проверяемым.
+                # Иначе связка остаётся рабочей: после бана одного остальные видят
+                # уже один живой триал, под правило не попадают, и накрутка стоит
+                # абузеру ровно один аккаунт из N. Список приходит от анализатора
+                # и содержит только чужие подписки с ЖИВЫМ триалом на том же HWID —
+                # платные и истёкшие туда не попадают.
+                for accomplice_uuid in (getattr(hwid, "active_trial_accomplices", None) or []):
+                    try:
+                        await api_client.disable_user(await _resolve_user_key(accomplice_uuid))
+                        blocked_count += 1
+                        logger.warning(
+                            "Auto-blocked trial-abuse accomplice %s (violation %s)",
+                            accomplice_uuid[:8], violation_id,
+                        )
+                        fire_event("user.blocked", {
+                            "uuid": accomplice_uuid,
+                            "username": None,
+                            "reason": "violation",
+                            "details": f"trial abuse accomplice of {user_uuid}",
+                            "violation_id": violation_id,
+                            "blocked_by": "auto",
+                        })
+                    except Exception as block_error:
+                        logger.warning(
+                            "Failed to auto-block accomplice %s: %s", accomplice_uuid, block_error,
+                        )
+
+                # Нарушение помечается решённым: меру система уже приняла. Без этого
+                # запись остаётся в «неразрешённых» (метрики фильтруют по
+                # action_taken IS NULL) и админ видит требование действия, которого
+                # делать не нужно.
+                if blocked_count and violation_id:
+                    try:
+                        comment = (
+                            "Автоблокировка детектора"
+                            if blocked_count == 1
+                            else f"Автоблокировка детектора: заблокировано аккаунтов — {blocked_count}"
+                        )
+                        await db_service.update_violation_action(
+                            violation_id=violation_id,
+                            action_taken="hard_block",
+                            admin_telegram_id=None,
+                            admin_comment=comment,
+                        )
+                    except Exception as mark_error:
+                        logger.warning(
+                            "Failed to mark violation %s as auto-resolved: %s", violation_id, mark_error,
+                        )
             else:
                 logger.info(
                     "Auto-block skipped for user %s (violation_auto_hard_block=off, score=%.1f)",
@@ -1252,6 +1332,103 @@ def _verify_webhook_signature(request: Request, body: bytes) -> bool:
         return False
 
 
+def _person_key(telegram_id, email, uuid: str):
+    """Человек за подпиской: telegram_id → email → uuid.
+
+    Та же лесенка, что у HWID-анализатора: несколько подписок одного человека
+    (мультитариф Bedolaga, регистрация без Telegram) считаются одним аккаунтом.
+    """
+    if telegram_id is not None:
+        return ("tg", telegram_id)
+    normalized = (email or "").strip().lower()
+    return ("email", normalized) if normalized else ("uuid", uuid)
+
+
+async def _notify_hwid_reuse(sync_result: dict) -> None:
+    """Устройство привязали к аккаунту, а его уже видели на другом — сказать сразу.
+
+    Периодический скан заметит это в течение получаса, и всё это время свежий
+    триал работает. Вебхук приходит в момент привязки, поэтому окно закрывается
+    здесь. Шумим не на всякое совпадение: пара «пробная → купленная» у одного
+    человека — это конверсия, а не абуз, и по журналу она встречается впятеро
+    чаще реальных нарушений.
+    """
+    user_uuid = sync_result.get("user_uuid")
+    hwid = sync_result.get("hwid")
+    if not user_uuid or not hwid or not db_service.is_connected:
+        return
+    if not config_service.get("violations_enabled", True):
+        return
+
+    try:
+        groups = await db_service.get_shared_hwids_for_user(str(user_uuid))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("HWID reuse check failed for %s: %s", user_uuid, e)
+        return
+
+    group = next((g for g in groups if g.get("hwid") == hwid), None)
+    others = (group or {}).get("other_users") or []
+    if not others:
+        return
+
+    # Устройство уже в чёрном списке — про него скажет блеклист-путь, и скажет
+    # больше: кого отключили. Два сообщения об одном событии админу не нужны.
+    try:
+        if await db_service.check_hwids_against_blacklist([str(hwid)]):
+            return
+    except Exception as e:  # noqa: BLE001
+        logger.debug("HWID blacklist pre-check failed for %s: %s", hwid, e)
+
+    self_key = _person_key(group.get("self_telegram_id"), group.get("self_email"), str(user_uuid))
+    self_trial = bool(group.get("self_is_trial"))
+
+    strangers, repeat_trials = [], []
+    for other in others:
+        key = _person_key(other.get("telegram_id"), other.get("email"), other.get("uuid", ""))
+        if key != self_key:
+            strangers.append(other)
+        elif self_trial and other.get("is_trial"):
+            repeat_trials.append(other)
+
+    if not strangers and not repeat_trials:
+        return
+
+    # Дотягиваем то, чего нет в связке: как выглядит само устройство и что за
+    # подписка у принимающего аккаунта — без этого карточка получается пустой
+    device = None
+    target: Dict[str, Any] = {"uuid": str(user_uuid), "is_trial": self_trial,
+                              "telegram_id": group.get("self_telegram_id"),
+                              "email": group.get("self_email")}
+    try:
+        devices = await db_service.get_user_hwid_devices(str(user_uuid))
+        device = next((d for d in devices if d.get("hwid") == hwid), None)
+        info = (await db_service.batch_get_users_info([str(user_uuid)])).get(str(user_uuid)) or {}
+        target["username"] = info.get("username")
+        target["status"] = info.get("status")
+        target["expire_at"] = info.get("expireAt") or info.get("expire_at")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("HWID reuse card details failed for %s: %s", user_uuid, e)
+
+    from web.backend.core.hwid_cards import reuse_card
+    from web.backend.core.notification_service import create_notification
+    try:
+        await create_notification(
+            title="Повторная пробная с того же устройства" if repeat_trials
+                  else "HWID переехал на другой аккаунт",
+            body=reuse_card(str(hwid), target, repeat_trials, strangers, device),
+            type="alert",
+            severity="critical" if repeat_trials else "warning",
+            link="/violations",
+            source="hwid_reuse",
+            source_id=str(hwid),
+            channels=["in_app", "telegram", "push"],
+            topic_type="violations",
+            event="violation.hwid_reused",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("HWID reuse notification failed: %s", e)
+
+
 @router.post("/webhook")
 async def collector_webhook(request: Request):
     """Webhook proxy: sync to DB, then forward to bot for Telegram notifications."""
@@ -1273,7 +1450,9 @@ async def collector_webhook(request: Request):
     # 1. Sync to DB (collector owns sync)
     try:
         from shared.sync import sync_service
-        await sync_service.handle_webhook_event(event, event_data)
+        sync_result = await sync_service.handle_webhook_event(event, event_data)
+        if event == "user_hwid_devices.added":
+            await _notify_hwid_reuse(sync_result or {})
     except Exception as e:
         logger.warning("Webhook sync failed for %s: %s", event, e)
 

@@ -176,15 +176,19 @@ def _client(client: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _clusters(correlations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    if not correlations:
+    active = [
+        item for item in correlations
+        if item.get("is_active", True) and item.get("kind") == "node"
+    ]
+    if not active:
         return []
-    top = max(correlations, key=lambda c: c["affected_users"])
-    where = f"нода «{top['label']}»" if top["kind"] == "node" else f"провайдер {top.get('label') or top['key']}"
+    top = max(active, key=lambda c: c["affected_users"])
+    where = f"нода «{top['label']}»"
     return [_h(
         "affected_by_cluster", "Массовая проблема",
         f"Проблема не только у него: {where}, затронуто пользователей — {top['affected_users']}. "
         f"Чинить надо инфраструктуру, а не аккаунт.",
-        "high", 0.8, "switch_node" if top["kind"] == "node" else None,
+        "high", 0.8, "switch_node",
     )]
 
 
@@ -193,7 +197,7 @@ def _device(user: Dict[str, Any], history: Dict[str, Any]) -> List[Dict[str, Any
     Признак — много коротких сессий с Android-устройства."""
     devices = user.get("_devices_raw") or []
     reconnects = history.get("total_connections", 0)
-    if reconnects < 15:
+    if reconnects < 40:
         return []
 
     for d in devices:
@@ -223,11 +227,13 @@ def _devices_limit(user: Dict[str, Any]) -> List[Dict[str, Any]]:
             "Одно из устройств юзера заблокировано по HWID — с него подключиться не выйдет.",
             "high", 0.9,
         ))
-    if limit and len(devices) >= limit:
+    # Ровно N из N — штатное использование оплаченного лимита, не abuse.
+    # Диагностируем лишь реальное превышение (например, при рассинхронизации).
+    if limit and len(devices) > limit:
         out.append(_h(
-            "hwid_limit_reached", "Достигнут лимит устройств",
-            f"Привязано {len(devices)} из {limit} устройств. Новое устройство панель не пустит, "
-            f"пока не отвязать старое.",
+            "hwid_limit_reached", "Превышен лимит устройств",
+            f"Привязано {len(devices)} устройств при лимите {limit}. "
+            f"Проверьте синхронизацию HWID и удалённые записи.",
             "medium", 0.7,
         ))
     return out

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Bell, Search, Menu, Globe, Check, ExternalLink, RefreshCw, RotateCcw } from '@/components/brand/icons'
-import { useQuery, useMutation, useQueryClient, useIsFetching } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -68,12 +68,10 @@ export default function Header({ onMenuToggle, onSearchClick }: HeaderProps) {
     },
   })
 
-  const fetchingCount = useIsFetching()
-  // /auth/me is a direct axios call (no useQuery), so useIsFetching()
-  // can't see it — track it locally to keep the spinner honest while
-  // the admin quota is being refreshed.
-  const [refreshingQuota, setRefreshingQuota] = useState(false)
-  const isRefreshing = fetchingCount > 0 || refreshingQuota
+  // This indicator belongs to the manual refresh action only. Subscribing the
+  // persistent header to the global React Query fetch count makes it re-render
+  // whenever any page starts or completes a request.
+  const [isRefreshing, setIsRefreshing] = useState(false)
 
   const handleRefreshAll = async () => {
     // Invalidate every React Query cache (lists, stats, settings, etc.)
@@ -82,14 +80,15 @@ export default function Header({ onMenuToggle, onSearchClick }: HeaderProps) {
     // useQuery, so `invalidateQueries()` alone would never refresh it —
     // leaving the dashboard quota card and the "Remaining traffic"
     // indicator stale until the next user mutation or page reload.
-    queryClient.invalidateQueries()
-    setRefreshingQuota(true)
+    if (isRefreshing) return
+    setIsRefreshing(true)
     try {
-      await usePermissionStore.getState().refreshAdmin()
-    } catch {
-      // Silent — the store keeps its previous values if /auth/me fails.
+      await Promise.allSettled([
+        queryClient.invalidateQueries(),
+        usePermissionStore.getState().refreshAdmin(),
+      ])
     } finally {
-      setRefreshingQuota(false)
+      setIsRefreshing(false)
     }
   }
 
@@ -127,7 +126,7 @@ export default function Header({ onMenuToggle, onSearchClick }: HeaderProps) {
 
   return (
     <header
-      className="h-16 flex items-center justify-between px-4 md:px-6 animate-fade-in relative z-40 backdrop-blur-sm pt-safe pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] [&::after]:content-[''] [&::after]:absolute [&::after]:bottom-0 [&::after]:inset-x-0 [&::after]:h-px [&::after]:bg-gradient-to-r [&::after]:from-transparent [&::after]:via-[rgba(var(--glow-rgb),0.12)] [&::after]:to-transparent"
+      className="h-16 flex items-center justify-between px-4 md:px-6 animate-fade-in relative z-40 bg-[var(--glass-bg-solid)] pt-safe pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] [&::after]:content-[''] [&::after]:absolute [&::after]:bottom-0 [&::after]:inset-x-0 [&::after]:h-px [&::after]:bg-gradient-to-r [&::after]:from-transparent [&::after]:via-[rgba(var(--glow-rgb),0.12)] [&::after]:to-transparent"
     >
       {/* Left side: hamburger + search */}
       <div className="flex items-center gap-3 flex-1">
@@ -145,7 +144,7 @@ export default function Header({ onMenuToggle, onSearchClick }: HeaderProps) {
         {/* Search trigger — opens Command Palette */}
         <button
           onClick={onSearchClick}
-          className="header-search-bar flex-1 max-w-md hidden sm:flex items-center gap-2 h-10 rounded-xl border border-[var(--glass-border)] bg-[var(--glass-bg)] backdrop-blur-sm px-3.5 text-sm text-muted-foreground hover:border-[var(--glass-border-hover)] hover:text-foreground hover:shadow-[0_0_15px_-5px_rgba(var(--glow-rgb),0.15)] transition-all duration-200 cursor-pointer"
+          className="header-search-bar flex-1 max-w-md hidden sm:flex items-center gap-2 h-10 rounded-xl border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3.5 text-sm text-muted-foreground hover:border-[var(--glass-border-hover)] hover:text-foreground hover:shadow-[0_0_15px_-5px_rgba(var(--glow-rgb),0.15)] transition-all duration-200 cursor-pointer"
         >
           <Search className="w-4 h-4 flex-shrink-0" />
           <span className="flex-1 text-left">{t('header.searchPlaceholder')}</span>
@@ -180,7 +179,7 @@ export default function Header({ onMenuToggle, onSearchClick }: HeaderProps) {
             size="sm"
             onClick={handleRefreshAll}
             disabled={isRefreshing}
-            className="gap-2 backdrop-blur-sm"
+            className="gap-2"
             aria-label={t('dashboard.refresh')}
           >
             <RefreshCw className={cn("w-3.5 h-3.5", isRefreshing && "animate-spin")} />
@@ -193,7 +192,7 @@ export default function Header({ onMenuToggle, onSearchClick }: HeaderProps) {
               size="sm"
               onClick={() => syncAll.mutate()}
               disabled={syncAll.isPending}
-              className="gap-2 backdrop-blur-sm"
+              className="gap-2"
               aria-label={t('dashboard.sync')}
             >
               <RotateCcw className={cn("w-3.5 h-3.5", syncAll.isPending && "animate-spin")} />
@@ -317,7 +316,7 @@ export default function Header({ onMenuToggle, onSearchClick }: HeaderProps) {
         {/* Status indicator */}
         <Badge variant="default" className="gap-2 px-3 py-1.5 rounded-xl">
           <span
-            className="w-2 h-2 rounded-full animate-pulse"
+            className="w-2 h-2 rounded-full"
             style={{ backgroundColor: 'var(--accent-from)', boxShadow: '0 0 8px rgba(var(--glow-rgb), 0.5)' }}
           />
           <span className="hidden sm:inline text-xs">{t('header.online')}</span>

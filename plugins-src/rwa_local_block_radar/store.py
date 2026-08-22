@@ -32,8 +32,14 @@ CREATE TABLE IF NOT EXISTS local_block_radar_alerts (
     baseline_online DOUBLE PRECISION NOT NULL,
     share DOUBLE PRECISION NOT NULL,
     baseline_share DOUBLE PRECISION NOT NULL,
-    node_alive BOOLEAN NOT NULL
+    node_alive BOOLEAN NOT NULL,
+    feedback TEXT,
+    feedback_at TIMESTAMPTZ
 );
+ALTER TABLE local_block_radar_alerts
+    ADD COLUMN IF NOT EXISTS feedback TEXT;
+ALTER TABLE local_block_radar_alerts
+    ADD COLUMN IF NOT EXISTS feedback_at TIMESTAMPTZ;
 CREATE UNIQUE INDEX IF NOT EXISTS local_block_radar_one_open_alert_idx
     ON local_block_radar_alerts (node_uuid) WHERE resolved_at IS NULL;
 CREATE INDEX IF NOT EXISTS local_block_radar_alerts_since_idx
@@ -261,6 +267,17 @@ async def resolve_alert(db, alert_id: int) -> None:
 async def alert_by_id(db, alert_id: int):
     row = await db.fetchrow(
         "SELECT * FROM local_block_radar_alerts WHERE id=$1", int(alert_id)
+    )
+    return dict(row) if row else None
+
+
+async def set_feedback(db, alert_id: int, verdict: str) -> dict | None:
+    row = await db.fetchrow(
+        """UPDATE local_block_radar_alerts
+              SET feedback=$2, feedback_at=NOW()
+            WHERE id=$1
+        RETURNING id, feedback, feedback_at""",
+        int(alert_id), verdict,
     )
     return dict(row) if row else None
 

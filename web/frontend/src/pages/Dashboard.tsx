@@ -444,8 +444,6 @@ const StatCard = memo(function StatCard({
       style={{
         animationDelay: `${index * 0.06}s`,
         background: `linear-gradient(135deg, rgba(${cfg.rgb}, 0.06) 0%, var(--glass-bg) 50%, rgba(${cfg.rgb}, 0.03) 100%)`,
-        backdropFilter: 'blur(var(--glass-blur, 24px))',
-        WebkitBackdropFilter: 'blur(var(--glass-blur, 24px))',
         border: '1px solid var(--glass-border)',
       }}
     >

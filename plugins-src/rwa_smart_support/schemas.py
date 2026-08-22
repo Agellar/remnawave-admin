@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 MatchedBy = Literal["uuid", "short_uuid", "telegram_id", "email", "ip", "username", "fallback"]
 Severity = Literal["low", "medium", "high"]
+AIProviderName = Literal["qcode", "gemini", "groq", "openrouter", "anthropic"]
 
 
 # ── поиск ────────────────────────────────────────────────────────
@@ -124,6 +125,9 @@ class CorrelationCluster(BaseModel):
     affected_users: int
     window_start: datetime
     window_end: datetime
+    total_users: Optional[int] = None
+    is_active: bool = True
+    age_minutes: Optional[int] = None
 
 
 class ViolationCard(BaseModel):
@@ -219,14 +223,30 @@ class ThresholdSettings(BaseModel):
     cluster_asn_min_affected: Optional[float] = None
     correlation_recompute_seconds: Optional[float] = None
     correlation_max_age_minutes: Optional[float] = None
+    cluster_node_min_share: Optional[float] = None
+    cluster_node_min_total_users: Optional[float] = None
+    correlation_history_minutes: Optional[float] = None
+
+
+class AIProviderSettings(BaseModel):
+    provider: AIProviderName
+    key_set: bool = False
+    model: Optional[str] = None
 
 
 class AISettingsOut(BaseModel):
     enabled: bool
+    provider_chain: List[AIProviderName] = Field(default_factory=list)
+    providers: List[AIProviderSettings] = Field(default_factory=list)
+    outage_lookup_enabled: bool = True
 
 
 class AISettingsIn(BaseModel):
     enabled: Optional[bool] = None
+    provider_chain: Optional[List[AIProviderName]] = None
+    keys: Optional[Dict[str, str]] = None
+    models: Optional[Dict[str, str]] = None
+    outage_lookup_enabled: Optional[bool] = None
 
 
 class AIQuota(BaseModel):
@@ -235,9 +255,22 @@ class AIQuota(BaseModel):
     topup_left: int = 0
 
 
+class AIProviderStatus(BaseModel):
+    # Legacy DB/env configs may still use custom/qcode_openai/qcode_gemini.
+    # The modern settings editor remains constrained to AIProviderName.
+    provider: str
+    configured: bool = False
+    available: bool = False
+    cooldown_seconds_remaining: int = 0
+    last_error: Optional[str] = None
+
+
 class AIStatusResponse(BaseModel):
     enabled: bool
-    subscription_state: Literal["active", "grace", "expired", "missing"]
+    configured: bool = False
+    providers: List[AIProviderStatus] = Field(default_factory=list)
+    # Backward-compatible extras for the older custom diagnostics endpoint.
+    subscription_state: Optional[Literal["active", "grace", "expired", "missing"]] = None
     quota: Optional[AIQuota] = None
 
 
@@ -261,6 +294,74 @@ class AIProviderIn(BaseModel):
     proxy: Optional[str] = None
     api_key: Optional[str] = None
     monthly_limit: Optional[int] = None
+
+
+# ── общий справочник клиентских приложений ──────────────────────
+
+class ClientIssue(BaseModel):
+    id: Optional[int] = None
+    version_min: Optional[str] = None
+    version_max: Optional[str] = None
+    platform: Optional[str] = None
+    os_min: Optional[str] = None
+    os_max: Optional[str] = None
+    severity: Severity = "medium"
+    title: str = Field(..., min_length=1, max_length=300)
+    detail: Optional[str] = Field(default=None, max_length=4000)
+    workaround: Optional[str] = Field(default=None, max_length=4000)
+
+
+class ClientApp(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+    title: Optional[str] = Field(default=None, max_length=200)
+    latest_version: Optional[str] = Field(default=None, max_length=64)
+    ambiguous: bool = False
+    notes: Optional[str] = Field(default=None, max_length=4000)
+    issues: List[ClientIssue] = Field(default_factory=list)
+
+
+class ClientReferenceResponse(BaseModel):
+    apps: List[ClientApp] = Field(default_factory=list)
+    catalog_version: int = 0
+
+
+class ClientSubmission(BaseModel):
+    id: int
+    kind: Literal["app", "issue"]
+    app_id: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    comment: str = ""
+    status: Literal["pending", "accepted", "rejected"] = "pending"
+    votes_up: int = 0
+    votes_down: int = 0
+    my_vote: int = Field(default=0, ge=-1, le=1)
+    mine: bool = False
+    created_at: str
+
+
+class ClientSubmissionListResponse(BaseModel):
+    submissions: List[ClientSubmission] = Field(default_factory=list)
+
+
+class ClientSubmissionIn(BaseModel):
+    kind: Literal["app", "issue"]
+    app_id: str = Field(..., min_length=1, max_length=64)
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    comment: Optional[str] = Field(default=None, max_length=500)
+
+
+class ClientSubmissionCreated(BaseModel):
+    id: int
+
+
+class ClientVoteIn(BaseModel):
+    vote: int = Field(..., ge=-1, le=1)
+
+
+class ClientVoteOut(BaseModel):
+    votes_up: int = 0
+    votes_down: int = 0
+    my_vote: int = Field(default=0, ge=-1, le=1)
 
 
 # ── действия ─────────────────────────────────────────────────────

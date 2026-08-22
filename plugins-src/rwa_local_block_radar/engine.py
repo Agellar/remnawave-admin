@@ -141,7 +141,9 @@ async def run_tick(ctx, state: dict) -> None:
                 new_alert_ids.append(alert_id)
                 created += 1
                 if cfg["notify_enabled"]:
-                    await _notify(ctx, row, base, resolved_event=False)
+                    await _notify(
+                        ctx, row, base, resolved_event=False, alert_id=alert_id
+                    )
 
     state["last_tick"] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -200,7 +202,14 @@ async def _publish_incident(
     )
 
 
-async def _notify(ctx, row: dict, base: dict, *, resolved_event: bool) -> None:
+async def _notify(
+    ctx,
+    row: dict,
+    base: dict,
+    *,
+    resolved_event: bool,
+    alert_id: int | None = None,
+) -> None:
     from web.backend.core.plugin_api import panel_notify
 
     title = "Локальный радар: восстановление" if resolved_event else "Локальный радар: просадка"
@@ -217,4 +226,12 @@ async def _notify(ctx, row: dict, base: dict, *, resolved_event: bool) -> None:
         link="/plugins/block-radar",
         plugin_id=ctx.plugin_id,
         group_key=f"local-block-radar:{row['node_uuid']}",
+        actions=(
+            [
+                {"text": "✅ Блок был", "action": "fb_yes", "ref": str(alert_id)},
+                {"text": "❌ Ложная тревога", "action": "fb_no", "ref": str(alert_id)},
+            ]
+            if not resolved_event and alert_id is not None
+            else None
+        ),
     )

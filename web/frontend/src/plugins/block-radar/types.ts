@@ -38,6 +38,22 @@ export interface RadarNodeDip {
   node_alive: boolean
 }
 
+/**
+ * Провал, который виден только у этой панели: её онлайн просел, а у соседей
+ * по тем же связкам — нет. Отвечает на первый вопрос при аварии: накрыло
+ * всех или меня одного. Приходит только от плагина 0.7.3 и новее.
+ */
+export interface RadarSelfAlert {
+  kind: 'self_only'
+  since: string
+  resolved: string | null
+  online: number
+  baseline: number | null
+  neighbours: number
+  neighbours_baseline: number | null
+  panels: number
+}
+
 export interface RadarStatus {
   last_tick: RadarTick | null
   last_probe?: RadarProbeCycleStatus | null
@@ -49,6 +65,8 @@ export interface RadarStatus {
   open_alerts: number
   license_usable: boolean
   open_dips: RadarNodeDip[]
+  /** Плагины до 0.7.3 поля не присылают — блок просто не рисуется. */
+  self_alert?: RadarSelfAlert | null
   license_state: string | null
   license_tier: string | null
   /** Unix-время окончания подписки: нужно, чтобы предупредить до отключения. */
@@ -83,6 +101,9 @@ export interface RadarAlert {
   outage_summary?: string | null
   affected: RadarAffected
   ai_analysis?: RadarAIAnalysis | null
+  /** Operator feedback used to tune detector quality. */
+  feedback?: RadarVerdict | null
+  feedback_at?: string | null
 }
 
 export interface RadarProbeCycleStatus {
@@ -221,6 +242,8 @@ export interface QCodeUsageStatus {
   fetched_at?: string | null
   cache_ttl_seconds?: number | null
 }
+
+export type RadarVerdict = 'confirmed' | 'false_positive'
 
 export interface RadarAlerts {
   items: RadarAlert[]

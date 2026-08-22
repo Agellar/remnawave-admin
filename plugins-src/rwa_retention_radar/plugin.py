@@ -73,6 +73,7 @@ def manifest() -> PluginManifest:
                 path="/plugins/retention-radar",
                 label_i18n="plugins.retention_radar.nav",
                 icon="TrendingDown",
+                permission=("retention_radar", "view"),
                 section_i18n="nav.sections.plugins",
             ),
         ],

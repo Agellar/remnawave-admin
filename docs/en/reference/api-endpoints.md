@@ -1,7 +1,7 @@
 # API v3 Endpoint Reference
 
 All endpoints are under the base path `/api/v3` and require `X-API-Key` header plus the scope
-shown next to each route. See [API.md](./API.md) for authentication basics.
+shown next to each route. See [Public API](/en/reference/api) for authentication basics.
 
 ---
 
@@ -116,6 +116,8 @@ Bulk endpoints use the dedicated bulk rate limit bucket (`API_V3_RATE_BULK_PER_M
 | `/nodes/{uuid}/enable` | POST | `nodes:write` | Enable node |
 | `/nodes/{uuid}/disable` | POST | `nodes:write` | Disable node |
 | `/nodes/{uuid}/restart` | POST | `nodes:write` | Restart node |
+| `/nodes/{uuid}/agent-token/generate` | POST | `nodes:token` | Generate (rotate) the node's agent token |
+| `/nodes/{uuid}/agent-token/revoke` | POST | `nodes:token` | Revoke the node's agent token |
 
 `NodePublic` schema:
 

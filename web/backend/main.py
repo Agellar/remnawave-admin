@@ -356,6 +356,8 @@ async def _run_migrations(database_url: str) -> bool:
         from alembic.script import ScriptDirectory
         from sqlalchemy import create_engine, text
 
+        from shared.migration_lock import MIGRATION_LOCK_KEY
+
         # Normalise URL to sync psycopg2 driver
         raw_url = str(database_url)
         if raw_url.startswith("postgresql+asyncpg://"):
@@ -367,12 +369,25 @@ async def _run_migrations(database_url: str) -> bool:
 
         def _run_sync():
             engine = None
+            lock_conn = None
             try:
                 engine = create_engine(
                     db_url,
                     pool_pre_ping=True,
                     pool_recycle=3600,
                 )
+
+                # Панель, коллектор и бот стартуют одновременно и лезут в
+                # alembic_version втроём. Каждый на время апгрейда убирает
+                # оттуда плагинные ветки и возвращает их обратно — и пока
+                # один планировал путь, другой уже вернул чужую ревизию:
+                # «Can't locate revision identified by 'sst_002'» и старт с
+                # ограниченной функциональностью. Блокировка выстраивает их
+                # в очередь; дождавшийся видит схему уже применённой и
+                # просто выходит. Ключ произвольный, но общий для всех трёх.
+                lock_conn = engine.connect()
+                lock_conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": MIGRATION_LOCK_KEY})
+                lock_conn.commit()
 
                 with engine.connect() as conn:
                     ctx = MigrationContext.configure(conn)
@@ -462,6 +477,17 @@ async def _run_migrations(database_url: str) -> bool:
                 return True
 
             finally:
+                if lock_conn is not None:
+                    try:
+                        lock_conn.execute(
+                            text("SELECT pg_advisory_unlock(:k)"), {"k": MIGRATION_LOCK_KEY}
+                        )
+                        lock_conn.commit()
+                    except Exception:
+                        # Соединение уже мертво — блокировка снимется сама
+                        # вместе с сессией.
+                        pass
+                    lock_conn.close()
                 if engine:
                     engine.dispose(close=True)
 
@@ -636,6 +662,20 @@ async def lifespan(app: FastAPI):
                             await asyncio.sleep(max(5, interval) * 60)
                     _bg("hwid_scan", _hwid_scan_loop())
 
+                    # Сторож чёрного списка HWID. Скан выше идёт от устройств,
+                    # присланных нодами, и блокирует однократно; подписку после
+                    # этого может поднять что угодно — привязка telegram_id к
+                    # email-подписке уже поднимала. Сторож ходит от самого
+                    # списка и гасит воскресшие подписки снова.
+                    from web.backend.core.hwid_guard import loop as _hwid_guard_loop
+                    _bg("hwid_blacklist_guard", _hwid_guard_loop())
+
+                    # Сторож адресов. HWID клиент называет сам и подделывает
+                    # заголовком, адрес выдаёт провайдер — по нему повторные
+                    # пробные видно даже там, где железо каждый раз «новое».
+                    from web.backend.core.ip_guard import loop as _ip_guard_loop
+                    _bg("ip_trial_guard", _ip_guard_loop())
+
                 # ── Services for all modes ──
                 async def _maintenance_loop():
                     while True:
@@ -694,6 +734,18 @@ async def lifespan(app: FastAPI):
                         plugin_loader.register(app)
                     except Exception:
                         logger.exception("Plugin loader failed during startup")
+
+                    try:
+                        # RBAC-ресурсы плагинов появляются в реестре только после register(),
+                        # а синхронизация прав суперадмина отработала намного раньше (см. выше)
+                        # и их ещё не видела. Без повторного прохода право плагина не попадает
+                        # даже суперадмину, NavEntry фильтруется по нему и пункт меню не рисуется
+                        # вообще — со стороны выглядит как «плагин установился, но его нет».
+                        # Проход идемпотентен: добавляет только недостающие права.
+                        from web.backend.core.rbac import sync_superadmin_permissions as _sync_rbac
+                        await _sync_rbac()
+                    except Exception:
+                        logger.exception("Superadmin permission sync after plugin registration failed")
 
                     try:
                         plugin_tasks = plugin_loader.start_scheduled_tasks()

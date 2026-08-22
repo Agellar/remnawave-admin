@@ -35,7 +35,9 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: true,
+    // Source maps expose application source and previously added ~14 MB to
+    // every production image. Local development keeps Vite's native maps.
+    sourcemap: false,
     rollupOptions: {
       output: {
         manualChunks(id) {

@@ -19,6 +19,7 @@ import hashlib
 import os
 import secrets
 import uuid
+from collections.abc import Collection
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -65,17 +66,32 @@ def _now() -> datetime:
 
 
 def confirm_token(
-    segment: str, message_text: str, discount_percent: int, telegram_ids: List[int]
+    segment: str,
+    message_text: str,
+    discount_percent: int,
+    telegram_ids: List[int],
+    visible_user_uuids: Collection[str] | None = None,
 ) -> str:
-    """Отпечаток того, что оператор видел в предпросмотре."""
-    payload = "|".join(
-        [
-            segment,
-            message_text.strip(),
-            str(discount_percent),
-            ",".join(str(i) for i in sorted(telegram_ids)),
-        ]
-    )
+    """Отпечаток текста, аудитории и границы видимости оператора.
+
+    For unrestricted admins (``None``) the historical token format is kept
+    byte-for-byte.  Scoped requests append a non-reversible digest of the
+    complete whitelist, so even a scope change that does not alter today's
+    segment invalidates the preview.
+    """
+    parts = [
+        segment,
+        message_text.strip(),
+        str(discount_percent),
+        ",".join(str(i) for i in sorted(telegram_ids)),
+    ]
+    if visible_user_uuids is not None:
+        canonical_scope = ",".join(
+            sorted({str(value).strip().lower() for value in visible_user_uuids})
+        )
+        scope_digest = hashlib.sha256(canonical_scope.encode("utf-8")).hexdigest()
+        parts.append(f"scope:{scope_digest}")
+    payload = "|".join(parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
@@ -114,14 +130,25 @@ async def _incident_affected_users(db, safety: Dict[str, Any]) -> set[str]:
 
 
 async def recipients(
-    db, segment: str, th: Dict[str, float], safety: Optional[Dict[str, Any]] = None
+    db,
+    segment: str,
+    th: Dict[str, float],
+    safety: Optional[Dict[str, Any]] = None,
+    visible_user_uuids: Collection[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """Кому реально можно писать — и почему остальные отсеялись.
 
     Причины отсева показываем оператору: «в сегменте 90, писать будем 61» без
     объяснения выглядит как потеря данных.
     """
-    everyone = await data.list_segment(db, segment, th, limit=5000, offset=0)
+    everyone = await data.list_segment(
+        db,
+        segment,
+        th,
+        limit=5000,
+        offset=0,
+        visible_user_uuids=visible_user_uuids,
+    )
     cooldown_days = int(th["message_cooldown_days"])
     limit = int(th["max_recipients_per_campaign"])
 
@@ -159,10 +186,17 @@ async def recipients(
 
 
 async def preview(
-    db, ctx, segment: str, th: Dict[str, float], custom_text: Optional[str] = None,
+    db,
+    ctx,
+    segment: str,
+    th: Dict[str, float],
+    custom_text: Optional[str] = None,
     safety: Optional[Dict[str, Any]] = None,
+    visible_user_uuids: Collection[str] | None = None,
 ) -> Dict[str, Any]:
-    people, skipped = await recipients(db, segment, th, safety)
+    people, skipped = await recipients(
+        db, segment, th, safety, visible_user_uuids=visible_user_uuids
+    )
     discount = int(th[f"discount_{segment}"])
     valid_hours = int(th["offer_valid_hours"])
 
@@ -196,7 +230,13 @@ async def preview(
         # «пришлём ссылку» одинаково вредно, кто бы его ни написал.
         "warnings": ai.find_risky(message),
         "sample": people[:5],
-        "confirm_token": confirm_token(segment, message, discount, telegram_ids),
+        "confirm_token": confirm_token(
+            segment,
+            message,
+            discount,
+            telegram_ids,
+            visible_user_uuids,
+        ),
     }
 
 
@@ -210,6 +250,7 @@ async def arm(
     confirm_token: str,
     admin_username: Optional[str],
     ttl_minutes: int,
+    admin_account_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     raw_token = secrets.token_urlsafe(32)
     idempotency_key = str(uuid.uuid4())
@@ -218,6 +259,7 @@ async def arm(
         token_hash=_token_hash(raw_token),
         confirm_token=confirm_token,
         idempotency_key=idempotency_key,
+        admin_account_id=admin_account_id,
         admin_username=admin_username,
         ttl_minutes=ttl_minutes,
     )
@@ -254,23 +296,45 @@ async def send(
     safety: Dict[str, Any],
     arm_token: Optional[str] = None,
     idempotency_key: Optional[str] = None,
+    admin_account_id: Optional[int] = None,
+    visible_user_uuids: Collection[str] | None = None,
 ) -> Dict[str, Any]:
-    if not dry_run and idempotency_key:
+    # Preserve the legacy fast idempotent retry for unrestricted admins.  A
+    # scoped admin must resolve and re-bind the current audience first so a
+    # policy change cannot replay an older preview.
+    if not dry_run and idempotency_key and visible_user_uuids is None:
         existing = await store.campaign_by_idempotency(db, idempotency_key)
         if existing:
             return _existing_result(existing)
 
-    people, _ = await recipients(db, segment, th, safety)
+    people, _ = await recipients(
+        db,
+        segment,
+        th,
+        safety,
+        visible_user_uuids=visible_user_uuids,
+    )
     discount = int(th[f"discount_{segment}"])
     valid_hours = int(th["offer_valid_hours"])
     telegram_ids = [int(u["telegram_id"]) for u in people]
 
-    expected = confirm_token(segment, message_text, discount, telegram_ids)
+    expected = confirm_token(
+        segment,
+        message_text,
+        discount,
+        telegram_ids,
+        visible_user_uuids,
+    )
     if token != expected:
         # Между предпросмотром и отправкой состав получателей мог измениться
         # (кто-то продлил подписку). Это не ошибка оператора — просто нужен
         # свежий предпросмотр.
         raise ValueError("stale_confirmation")
+
+    if not dry_run and idempotency_key and visible_user_uuids is not None:
+        existing = await store.campaign_by_idempotency(db, idempotency_key)
+        if existing:
+            return _existing_result(existing)
 
     if not people:
         raise ValueError("empty_audience")
@@ -286,6 +350,7 @@ async def send(
                 token_hash=_token_hash(arm_token),
                 confirm_token=token,
                 idempotency_key=idempotency_key,
+                admin_account_id=admin_account_id,
                 admin_username=admin_username,
             )
             if not consumed:

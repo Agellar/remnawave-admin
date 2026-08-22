@@ -47,7 +47,7 @@ def _build(ctx: PluginContext) -> PluginParts:
 
         clusters = await data.compute_clusters(ctx.db, thresholds)
         await store.replace_correlations(
-            ctx.db, clusters, thresholds["correlation_max_age_minutes"]
+            ctx.db, clusters, thresholds["correlation_history_minutes"]
         )
         ctx.logger.info("smart_support.correlations_updated", extra={"clusters": len(clusters)})
 
@@ -76,6 +76,7 @@ def manifest() -> PluginManifest:
                 path="/plugins/smart-support",
                 label_i18n="plugins.smart_support.nav",
                 icon="Stethoscope",
+                permission=("smart_support", "view"),
                 section_i18n="nav.sections.plugins",
             ),
         ],

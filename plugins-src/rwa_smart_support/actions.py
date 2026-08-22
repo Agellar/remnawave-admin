@@ -71,8 +71,12 @@ CATALOG: List[Dict[str, Any]] = [
 
 ACTION_IDS = {a["id"] for a in CATALOG}
 
-# Права RBAC: смотреть отчёт и выполнять действия — разные вещи.
-RBAC_RESOURCES = {"smart_support": ["view", "execute"]}
+# Новые granular actions регистрируем вместе с прежним ``execute``: текущие
+# роли продолжают выполнять уже разрешённые safe actions, а оператор может
+# постепенно выдать отдельные diagnose/run_actions без аварийной миграции.
+RBAC_RESOURCES = {
+    "smart_support": ["view", "diagnose", "run_actions", "edit", "execute"]
+}
 
 
 async def resolve_panel_user_id(db, user_uuid: str) -> Optional[int]:

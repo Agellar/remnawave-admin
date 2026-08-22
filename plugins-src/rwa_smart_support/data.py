@@ -29,6 +29,23 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def is_globally_routable_ip(value: Any) -> bool:
+    """Only public unicast addresses may contribute to abuse heuristics."""
+    if value is None:
+        return False
+    try:
+        address = ipaddress.ip_address(str(value).strip())
+    except ValueError:
+        # PostgreSQL ``inet::text`` may include /32 or /128.
+        try:
+            address = ipaddress.ip_interface(str(value).strip()).ip
+        except ValueError:
+            return False
+    # ``is_global`` excludes private, loopback, link-local, documentation and
+    # CGNAT (100.64.0.0/10); multicast is excluded explicitly for clarity.
+    return bool(address.is_global and not address.is_multicast)
+
+
 def detect_query_kind(q: str) -> str:
     q = q.strip()
     if UUID_RE.match(q):
@@ -63,46 +80,70 @@ LEFT JOIN ip_metadata m ON m.ip_address = c.ip_address
 """
 
 
-async def search_users(db, q: str, limit: int) -> Tuple[str, List[Dict[str, Any]]]:
+async def search_users(
+    db,
+    q: str,
+    limit: int,
+    visible_user_uuids: Optional[set[str]] = None,
+) -> Tuple[str, List[Dict[str, Any]]]:
     """Резолвер идентификатора: тип запроса определяем сами, при промахе
-    откатываемся на поиск по никнейму/почте."""
+    откатываемся на поиск по никнейму/почте. Ограничение видимости входит в
+    SQL до LIMIT, иначе скрытые строки вытесняли бы разрешённых пользователей
+    из результата, а post-filter возвращал бы ложно пустой поиск."""
     kind = detect_query_kind(q)
     rows: List[Any] = []
+    visible_arg = None if visible_user_uuids is None else sorted(visible_user_uuids)
+    scope_sql = "($3::uuid[] IS NULL OR u.uuid = ANY($3::uuid[]))"
 
     if kind == "uuid":
-        rows = await db.fetch(_SEARCH_SELECT + " WHERE u.uuid = $1::uuid LIMIT $2", q, limit)
+        rows = await db.fetch(
+            _SEARCH_SELECT + f" WHERE u.uuid = $1::uuid AND {scope_sql} LIMIT $2",
+            q, limit, visible_arg,
+        )
     elif kind == "short_uuid":
-        rows = await db.fetch(_SEARCH_SELECT + " WHERE u.short_uuid = $1 LIMIT $2", q, limit)
+        rows = await db.fetch(
+            _SEARCH_SELECT + f" WHERE u.short_uuid = $1 AND {scope_sql} LIMIT $2",
+            q, limit, visible_arg,
+        )
     elif kind == "telegram_id":
-        rows = await db.fetch(_SEARCH_SELECT + " WHERE u.telegram_id = $1 LIMIT $2", int(q), limit)
+        rows = await db.fetch(
+            _SEARCH_SELECT + f" WHERE u.telegram_id = $1 AND {scope_sql} LIMIT $2",
+            int(q), limit, visible_arg,
+        )
     elif kind == "email":
-        rows = await db.fetch(_SEARCH_SELECT + " WHERE u.email ILIKE $1 LIMIT $2", q, limit)
+        rows = await db.fetch(
+            _SEARCH_SELECT + f" WHERE u.email ILIKE $1 AND {scope_sql} LIMIT $2",
+            q, limit, visible_arg,
+        )
     elif kind == "ip":
         rows = await db.fetch(
-            _SEARCH_SELECT + """
+            _SEARCH_SELECT + f"""
             WHERE EXISTS (
                 SELECT 1 FROM user_connections uc
                 WHERE uc.user_uuid = u.uuid AND uc.ip_address = $1
                   AND uc.connected_at >= NOW() - INTERVAL '30 days'
             )
+              AND {scope_sql}
             ORDER BY c.connected_at DESC NULLS LAST LIMIT $2""",
-            q, limit,
+            q, limit, visible_arg,
         )
     else:
         rows = await db.fetch(
-            _SEARCH_SELECT + """
-            WHERE u.username ILIKE $1 OR u.email ILIKE $1 OR u.short_uuid ILIKE $1
+            _SEARCH_SELECT + f"""
+            WHERE (u.username ILIKE $1 OR u.email ILIKE $1 OR u.short_uuid ILIKE $1)
+              AND {scope_sql}
             ORDER BY u.updated_at DESC NULLS LAST LIMIT $2""",
-            f"%{q}%", limit,
+            f"%{q}%", limit, visible_arg,
         )
 
     if not rows and kind != "username":
         kind = "fallback"
         rows = await db.fetch(
-            _SEARCH_SELECT + """
-            WHERE u.username ILIKE $1 OR u.email ILIKE $1 OR u.description ILIKE $1
+            _SEARCH_SELECT + f"""
+            WHERE (u.username ILIKE $1 OR u.email ILIKE $1 OR u.description ILIKE $1)
+              AND {scope_sql}
             ORDER BY u.updated_at DESC NULLS LAST LIMIT $2""",
-            f"%{q}%", limit,
+            f"%{q}%", limit, visible_arg,
         )
 
     hits = []
@@ -159,6 +200,7 @@ async def user_section(db, user_uuid: str) -> Optional[Dict[str, Any]]:
            FROM user_hwid_devices d
            LEFT JOIN hwid_blacklist b ON b.hwid = d.hwid
            WHERE d.user_uuid = $1::uuid
+             AND d.removed_at IS NULL
            ORDER BY last_seen_at DESC NULLS LAST""",
         user_uuid,
     )
@@ -218,6 +260,30 @@ async def history_section(db, user_uuid: str, hours: int = 24) -> Dict[str, Any]
         user_uuid, hours,
     )
 
+    # География и число адресов считаются только по глобально маршрутизируемым
+    # IP. Домашние подсети, loopback и CGNAT нельзя интерпретировать как смену
+    # страны/провайдера или мультиаккаунтинг.
+    identity_rows = await db.fetch(
+        """SELECT DISTINCT c.ip_address::text AS ip_address,
+                          m.country_name, m.asn
+           FROM user_connections c
+           LEFT JOIN ip_metadata m ON m.ip_address = c.ip_address
+           WHERE c.user_uuid = $1::uuid
+             AND c.connected_at >= NOW() - make_interval(hours => $2)""",
+        user_uuid, hours,
+    )
+    public_rows = [r for r in identity_rows if is_globally_routable_ip(r["ip_address"])]
+    public_ips = {str(r["ip_address"]) for r in public_rows}
+    public_countries = {str(r["country_name"]) for r in public_rows if r["country_name"]}
+    public_asns = {str(r["asn"]) for r in public_rows if r["asn"] is not None}
+    anomaly_stats = dict(stats)
+    anomaly_stats.update({
+        "ips": len(public_ips),
+        "countries": len(public_countries),
+        "asns": len(public_asns),
+        "country_names": sorted(public_countries),
+    })
+
     rows = await db.fetch(
         """SELECT c.connected_at, c.disconnected_at, c.ip_address, c.node_uuid,
                   m.country_name, m.city, m.asn, m.asn_org,
@@ -234,6 +300,7 @@ async def history_section(db, user_uuid: str, hours: int = 24) -> Dict[str, Any]
 
     timeline = []
     for r in rows:
+        public_ip = is_globally_routable_ip(r["ip_address"])
         duration = None
         if r["disconnected_at"]:
             duration = int((r["disconnected_at"] - r["connected_at"]).total_seconds())
@@ -242,20 +309,20 @@ async def history_section(db, user_uuid: str, hours: int = 24) -> Dict[str, Any]
             "disconnected_at": r["disconnected_at"],
             "duration_seconds": duration,
             "ip": r["ip_address"],
-            "country": r["country_name"],
-            "city": r["city"],
-            "asn": f"AS{r['asn']}" if r["asn"] else None,
-            "asn_org": r["asn_org"],
+            "country": r["country_name"] if public_ip else None,
+            "city": r["city"] if public_ip else None,
+            "asn": f"AS{r['asn']}" if public_ip and r["asn"] else None,
+            "asn_org": r["asn_org"] if public_ip else None,
             "node_uuid": str(r["node_uuid"]) if r["node_uuid"] else None,
             "node_name": r["node_name"],
         })
 
     return {
         "total_connections": int(stats["total"] or 0),
-        "unique_ips": int(stats["ips"] or 0),
-        "unique_countries": int(stats["countries"] or 0),
-        "unique_asns": int(stats["asns"] or 0),
-        "anomalies": _anomalies(stats),
+        "unique_ips": len(public_ips),
+        "unique_countries": len(public_countries),
+        "unique_asns": len(public_asns),
+        "anomalies": _anomalies(anomaly_stats),
         "timeline": timeline,
     }
 
@@ -265,29 +332,24 @@ def _anomalies(stats) -> List[str]:
     их фразами, а не кодами."""
     out: List[str] = []
     total = int(stats["total"] or 0)
+    ips = int(stats["ips"] or 0)
     countries = list(stats["country_names"] or [])
-    asns = int(stats["asns"] or 0)
 
-    if total >= 40:
+    if total >= 80:
         out.append(f"Очень частые переподключения: {total} за 24 часа")
-    elif total >= 20:
-        out.append(f"Частые переподключения: {total} за 24 часа")
 
-    if len(countries) >= 3:
+    # Два государства и до двенадцати адресов — нормальный профиль семьи с
+    # несколькими устройствами, роумингом и VPN; не поднимаем гипотезу вовсе.
+    if len(countries) >= 3 and ips >= 13:
         out.append(f"Подключения из {len(countries)} стран за сутки: {', '.join(sorted(countries))}")
-    elif len(countries) == 2:
-        out.append(f"Две страны за сутки: {', '.join(sorted(countries))}")
 
-    if asns >= 4:
-        out.append(f"Смена провайдера: {asns} разных ASN за сутки")
+    if ips >= 20:
+        out.append(f"Много публичных IP-адресов: {ips} за сутки")
 
     short = int(stats["short_sessions"] or 0)
     if short >= 5:
         out.append(f"{short} сессий короче минуты — туннель рвётся сразу после подключения")
 
-    nodes = int(stats["nodes"] or 0)
-    if nodes >= 4:
-        out.append(f"Клиент ходил через {nodes} разных нод за сутки")
     return out
 
 
@@ -390,7 +452,10 @@ async def nodes_section(db, user_uuid: str, hours: int = 24) -> List[Dict[str, A
     rows = await db.fetch(
         """WITH touched AS (
                SELECT node_uuid,
-                      BOOL_OR(disconnected_at IS NULL) AS active_here,
+                       BOOL_OR(
+                           disconnected_at IS NULL
+                           AND connected_at >= NOW() - INTERVAL '15 minutes'
+                       ) AS active_here,
                       MAX(connected_at) AS last_seen
                FROM user_connections
                WHERE user_uuid = $1::uuid
@@ -432,6 +497,7 @@ async def violations_section(db, user_uuid: str, days: int = 14) -> List[Dict[st
                   action_taken
            FROM violations
            WHERE user_uuid = $1::uuid AND detected_at >= NOW() - make_interval(days => $2)
+             AND action_taken IS DISTINCT FROM 'annulled'
            ORDER BY detected_at DESC LIMIT 20""",
         user_uuid, days,
     )
@@ -463,7 +529,7 @@ async def violations_section(db, user_uuid: str, days: int = 14) -> List[Dict[st
 
 async def compute_clusters(db, thresholds: Dict[str, float]) -> List[Dict[str, Any]]:
     """Кластеры массовых проблем: спайк переподключений на одной ноде и
-    такой же спайк внутри одного ASN.
+    несколько свежих нарушений у клиентов одного ASN.
 
     Считаем по всей базе разом раз в N секунд, а не на каждый отчёт —
     иначе каждый просмотр карточки стоил бы полного скана суток.
@@ -491,47 +557,38 @@ async def compute_clusters(db, thresholds: Dict[str, float]) -> List[Dict[str, A
         int(thresholds["cluster_node_reconnects_per_user"]),
         int(thresholds["cluster_node_min_affected"]),
     )
+    population_rows = await db.fetch(
+        """SELECT node_uuid, COUNT(DISTINCT user_uuid)::int AS total_users
+             FROM user_connections
+            WHERE connected_at >= NOW() - make_interval(mins => $1)
+              AND node_uuid IS NOT NULL
+            GROUP BY node_uuid""",
+        node_window,
+    )
+    node_populations = {
+        str(row["node_uuid"]): int(row["total_users"] or 0)
+        for row in population_rows
+    }
     for r in node_rows:
+        affected = int(r["affected"])
+        node_population = node_populations.get(str(r["node_uuid"]), 0)
+        if node_population < int(thresholds["cluster_node_min_total_users"]):
+            continue
+        if affected / max(node_population, 1) < float(thresholds["cluster_node_min_share"]):
+            continue
         clusters.append({
             "kind": "node",
             "key": str(r["node_uuid"]),
             "label": r["name"],
-            "affected_users": int(r["affected"]),
+            "affected_users": affected,
+            "total_users": node_population,
             "member_uuids": r["members"],
             "window_start": now - timedelta(minutes=node_window),
             "window_end": now,
         })
 
-    asn_window = int(thresholds["cluster_asn_window_minutes"])
-    asn_rows = await db.fetch(
-        """WITH recent AS (
-               SELECT c.user_uuid, m.asn, MAX(m.asn_org) AS asn_org, COUNT(*) AS cnt
-               FROM user_connections c
-               JOIN ip_metadata m ON m.ip_address = c.ip_address
-               WHERE c.connected_at >= NOW() - make_interval(mins => $1)
-                 AND m.asn IS NOT NULL
-               GROUP BY 1, 2
-           )
-           SELECT r.asn, MAX(r.asn_org) AS asn_org,
-                  COUNT(*) AS affected,
-                  ARRAY_AGG(r.user_uuid::text) AS members
-           FROM recent r
-           WHERE r.cnt >= $2
-           GROUP BY r.asn
-           HAVING COUNT(*) >= $3""",
-        asn_window,
-        int(thresholds["cluster_node_reconnects_per_user"]),
-        int(thresholds["cluster_asn_min_affected"]),
-    )
-    for r in asn_rows:
-        clusters.append({
-            "kind": "asn",
-            "key": f"AS{r['asn']}",
-            "label": r["asn_org"],
-            "affected_users": int(r["affected"]),
-            "member_uuids": r["members"],
-            "window_start": now - timedelta(minutes=asn_window),
-            "window_end": now,
-        })
-
+    # Do not infer an ISP outage from unrelated policy/abuse violations that
+    # happen to share a large ASN. Provider outages use the independent,
+    # bounded IODA signal; local mass incidents require reconnect evidence on
+    # one of our nodes plus population/share thresholds above.
     return clusters

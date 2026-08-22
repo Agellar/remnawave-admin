@@ -14,6 +14,11 @@
  *
  * Adding a plugin: import a lazy page below and add an entry to
  * ``PLUGIN_ROUTES`` keyed by the plugin id.
+ *
+ * Plugins distributed as standalone wheels cannot add themselves here. They
+ * declare their UI in the backend manifest instead (``PluginUI``) and are
+ * mounted by ``ExternalPluginPage`` on the generic ``/plugins/:pluginId``
+ * route. Entries in this registry win over that route.
  */
 import { lazy, type ComponentType } from 'react'
 
@@ -29,6 +34,7 @@ export const PLUGIN_ROUTES: Record<string, PluginRoute[]> = {
     { path: '/plugins/smart-support/report/:uuid', Component: lazy(() => import('./smart-support/ReportPage')) },
     { path: '/plugins/smart-support/settings', Component: lazy(() => import('./smart-support/SettingsPage')) },
     { path: '/plugins/smart-support/audit', Component: lazy(() => import('./smart-support/AuditPage')) },
+    { path: '/plugins/smart-support/clients', Component: lazy(() => import('./smart-support/ClientsPage')) },
   ],
   retention_radar: [
     { path: '/plugins/retention-radar', Component: lazy(() => import('./retention-radar/DashboardPage')) },

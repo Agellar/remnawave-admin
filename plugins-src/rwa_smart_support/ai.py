@@ -26,6 +26,7 @@ DEFAULT_MODELS = {
     "gemini": "gemini-2.5-flash",
     "deepseek": "deepseek-chat",
     "openai": "gpt-4o-mini",
+    "groq": "llama-3.3-70b-versatile",
     "openrouter": "openai/gpt-4o-mini",
     "anthropic": "claude-opus-5",
     # QCode — релей: один ключ (`cr_...`) работает во всех трёх протоколах,
@@ -42,6 +43,7 @@ DEFAULT_BASE_URLS = {
     "gemini": "https://generativelanguage.googleapis.com",
     "deepseek": "https://api.deepseek.com/v1",
     "openai": "https://api.openai.com/v1",
+    "groq": "https://api.groq.com/openai/v1",
     "openrouter": "https://openrouter.ai/api/v1",
     "anthropic": "https://api.anthropic.com",
     "qcode": "https://api.qcode.cc/api",
@@ -50,7 +52,7 @@ DEFAULT_BASE_URLS = {
 }
 
 # OpenAI-совместимые: один и тот же /chat/completions
-OPENAI_LIKE = ("openai", "deepseek", "openrouter", "qcode_openai", "custom")
+OPENAI_LIKE = ("openai", "deepseek", "groq", "openrouter", "qcode_openai", "custom")
 
 # Протокол Anthropic, но ключ уходит Bearer-ом вместо x-api-key —
 # так его принимают релеи вроде QCode.
@@ -96,7 +98,19 @@ SYSTEM_PROMPT_TEMPLATE = (
     "1. Не повторяй гипотезы движка — их саппорт уже видит.\n"
     "2. Не выдумывай данные, которых нет в сводке.\n"
     "3. Если добавить нечего — верни пустой extra_hypotheses и честное summary.\n"
-    "4. summary и detail пиши по-русски, коротко, языком инженера поддержки.\n\n"
+    "4. summary и detail пиши по-русски, коротко, языком инженера поддержки.\n"
+    "5. Это диагностика доступности, клиента и инфраструктуры, а НЕ поиск "
+    "нарушителей. Несколько устройств, две и более страны, роуминг, CGNAT, "
+    "смена ASN и необычное время подключения сами по себе нормальны и не "
+    "доказывают передачу подписки или злоупотребление.\n"
+    "6. Учитывай только активные, не аннулированные нарушения из "
+    "violations_recent и никогда не предлагай блокировку, отключение, отзыв "
+    "подписки или иное наказание.\n"
+    "7. provider_outage, если он есть, — подтверждённый внешний сигнал сбоя "
+    "сети провайдера клиента; учитывай его первым, но не расширяй выводы за "
+    "пределы переданных данных.\n"
+    "8. suggested_action может быть только switch_node, notify_update или null; "
+    "эти подсказки не выполняются автоматически.\n\n"
     "{reply_rules}\n\n"
     "Ответь СТРОГО одним JSON-объектом без markdown-обёртки:\n"
     '{{"summary": "2-4 предложения: что происходит с юзером", '
@@ -179,6 +193,16 @@ def build_context(report: Dict[str, Any]) -> Dict[str, Any]:
 
     timeline = history.get("timeline", [])
     durations = [e["duration_seconds"] for e in timeline if e.get("duration_seconds") is not None]
+    outage = report.get("provider_outage")
+    safe_outage = None
+    if isinstance(outage, dict):
+        safe_outage = {
+            "asn": outage.get("asn"),
+            "org": outage.get("org"),
+            "severity": outage.get("severity"),
+            "methods": list(outage.get("methods") or [])[:5],
+            "source": outage.get("source"),
+        }
 
     return {
         "user": {
@@ -222,7 +246,9 @@ def build_context(report: Dict[str, Any]) -> Dict[str, Any]:
         "mass_incidents": [
             {"kind": c["kind"], "label": c.get("label"), "affected_users": c["affected_users"]}
             for c in report.get("correlations", [])
+            if c.get("kind") == "node" and c.get("is_active", True)
         ],
+        "provider_outage": safe_outage,
         "violations_14d": len(report.get("violations_recent", [])),
         "engine_hypotheses": [
             {"rule_id": h["rule_id"], "title": h["title"], "confidence": h["confidence"]}
@@ -251,7 +277,10 @@ async def analyze(cfg: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]
     user_prompt = f"Сводка по пользователю:\n{payload}"
     system_prompt = build_system_prompt(cfg.get("reply_language") or DEFAULT_REPLY_LANGUAGE)
 
-    kwargs: Dict[str, Any] = {"timeout": httpx.Timeout(60.0)}
+    # The report itself must stay interactive even when a provider hangs.
+    # API-level failover adds a total deadline; the transport timeout keeps a
+    # cancelled/slow socket from occupying the pool for a full minute.
+    kwargs: Dict[str, Any] = {"timeout": httpx.Timeout(12.0, connect=5.0)}
     if cfg.get("proxy"):
         kwargs["proxy"] = cfg["proxy"]
 
@@ -426,13 +455,16 @@ def _clean_hypotheses(items: Any) -> List[Dict[str, Any]]:
             confidence = float(item.get("confidence", 0.5))
         except (TypeError, ValueError):
             confidence = 0.5
-        rule_id = str(item.get("rule_id") or "ai_finding")
+        rule_id = re.sub(r"[^a-z0-9_]+", "_", str(item.get("rule_id") or "ai_finding").lower())
+        suggested = str(item.get("suggested_action") or "").strip().lower()
+        if suggested not in {"switch_node", "notify_update"}:
+            suggested = ""
         out.append({
             "rule_id": f"ai_{rule_id}" if not rule_id.startswith("ai_") else rule_id,
             "title": str(item["title"])[:120],
             "detail": str(item.get("detail") or "")[:600] or None,
             "severity": _one_of(item.get("severity"), ("low", "medium", "high"), "low"),
             "confidence": max(0.0, min(1.0, confidence)),
-            "suggested_action": str(item["suggested_action"]) if item.get("suggested_action") else None,
+            "suggested_action": suggested or None,
         })
     return out

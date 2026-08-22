@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 
@@ -93,6 +94,22 @@ _ORDER = {
 }
 
 
+UserScope = Collection[str] | None
+
+
+def _apply_user_scope(
+    where: str, params: List[Any], visible_user_uuids: UserScope
+) -> Tuple[str, List[Any]]:
+    """Append a bound UUID whitelist while preserving ``None`` as all users."""
+    if visible_user_uuids is None:
+        return where, params
+    scoped = [*params, sorted({str(value).lower() for value in visible_user_uuids})]
+    return (
+        f"({where}) AND uuid = ANY(${len(scoped)}::uuid[])",
+        scoped,
+    )
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -134,8 +151,14 @@ def _row(record, th: Dict[str, float], segment: str) -> Dict[str, Any]:
     }
 
 
-async def count_segment(db, key: str, th: Dict[str, float]) -> int:
+async def count_segment(
+    db,
+    key: str,
+    th: Dict[str, float],
+    visible_user_uuids: UserScope = None,
+) -> int:
     where, params = _segment_where(key, th)
+    where, params = _apply_user_scope(where, params, visible_user_uuids)
     value = await db.fetchval(
         f"{_BASE_CTE} SELECT count(*) FROM base WHERE {where}", *params
     )
@@ -143,9 +166,15 @@ async def count_segment(db, key: str, th: Dict[str, float]) -> int:
 
 
 async def list_segment(
-    db, key: str, th: Dict[str, float], limit: int, offset: int
+    db,
+    key: str,
+    th: Dict[str, float],
+    limit: int,
+    offset: int,
+    visible_user_uuids: UserScope = None,
 ) -> List[Dict[str, Any]]:
     where, params = _segment_where(key, th)
+    where, params = _apply_user_scope(where, params, visible_user_uuids)
     rows = await db.fetch(
         f"""{_BASE_CTE}
             SELECT {_ROW_COLUMNS} FROM base
@@ -159,22 +188,47 @@ async def list_segment(
     return [_row(r, th, key) for r in rows]
 
 
-async def counts(db, th: Dict[str, float]) -> Dict[str, int]:
-    return {key: await count_segment(db, key, th) for key in SEGMENTS}
+async def counts(
+    db, th: Dict[str, float], visible_user_uuids: UserScope = None
+) -> Dict[str, int]:
+    return {
+        key: await count_segment(db, key, th, visible_user_uuids)
+        for key in SEGMENTS
+    }
 
 
-async def totals(db) -> Dict[str, int]:
+async def totals(db, visible_user_uuids: UserScope = None) -> Dict[str, int]:
+    params: List[Any] = []
+    where = ""
+    if visible_user_uuids is not None:
+        params.append(sorted({str(value).lower() for value in visible_user_uuids}))
+        where = " WHERE uuid = ANY($1::uuid[])"
     row = await db.fetchrow(
-        """SELECT count(*) AS total,
-                  count(*) FILTER (WHERE status = 'ACTIVE') AS active
-             FROM users"""
+        f"""SELECT count(*) AS total,
+                   count(*) FILTER (WHERE status = 'ACTIVE') AS active
+              FROM users{where}""",
+        *params,
     )
     return {"total": int(row["total"]), "active": int(row["active"])}
 
 
-async def attention(db, th: Dict[str, float], limit: int = 10) -> List[Dict[str, Any]]:
+async def attention(
+    db,
+    th: Dict[str, float],
+    limit: int = 10,
+    visible_user_uuids: UserScope = None,
+) -> List[Dict[str, Any]]:
     """«Горит прямо сейчас»: подписка кончается на днях, а человек уже
     молчит. Самый дешёвый способ вернуть деньги — написать этим первыми."""
+    params: List[Any] = [
+        int(th["expiring_days"]),
+        int(th["expiring_risk_days"]),
+    ]
+    scope_sql = ""
+    if visible_user_uuids is not None:
+        params.append(sorted({str(value).lower() for value in visible_user_uuids}))
+        scope_sql = f" AND uuid = ANY(${len(params)}::uuid[])"
+    params.append(int(limit))
     rows = await db.fetch(
         f"""{_BASE_CTE}
             SELECT {_ROW_COLUMNS} FROM base
@@ -184,10 +238,9 @@ async def attention(db, th: Dict[str, float], limit: int = 10) -> List[Dict[str,
                AND expire_at <= NOW() + ($1::int * INTERVAL '1 day')
                AND (last_online IS NULL
                     OR last_online < NOW() - ($2::int * INTERVAL '1 day'))
+               {scope_sql}
              ORDER BY expire_at ASC
-             LIMIT $3""",
-        int(th["expiring_days"]),
-        int(th["expiring_risk_days"]),
-        int(limit),
+             LIMIT ${len(params)}""",
+        *params,
     )
     return [_row(r, th, "expiring") for r in rows]

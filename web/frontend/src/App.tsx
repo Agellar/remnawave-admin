@@ -16,13 +16,14 @@ const routerBasename = rawSecretPath.startsWith('/') ? rawSecretPath : `/${rawSe
 // Layout
 import Layout from './components/layout/Layout'
 
-// Login, Dashboard, ResetPassword loaded eagerly (critical path)
+// Public authentication routes stay eager; the protected dashboard is split
+// out so login and app-shell boot do not parse the dashboard's chart bundle.
 import Login from './pages/Login'
-import Dashboard from './pages/Dashboard'
 import ResetPassword from './pages/ResetPassword'
 import OAuthCallback from './pages/OAuthCallback'
 
 // Lazy-loaded pages
+const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Users = lazy(() => import('./pages/Users'))
 const UserDetail = lazy(() => import('./pages/UserDetail'))
 const Nodes = lazy(() => import('./pages/Nodes'))
@@ -58,6 +59,9 @@ const NotFound = lazy(() => import('./pages/NotFound'))
 // Plugin UI route registry — see web/frontend/src/plugins/registry.tsx
 import { PLUGIN_ROUTES } from './plugins/registry'
 import { useActivePlugins } from './lib/plugins'
+
+// Generic host for plugins that ship outside this repo — see ExternalPluginPage
+const ExternalPluginPage = lazy(() => import('./plugins/ExternalPluginPage'))
 
 /**
  * Inner shell that renders all protected routes, including any contributed
@@ -114,6 +118,10 @@ function ProtectedShell() {
             {pluginRouteEntries.map(({ key, path, Component }) => (
               <Route key={key} path={path} element={<Component />} />
             ))}
+            {/* Plugins that ship outside this repo declare their UI in the
+                backend manifest and are mounted here. Built-in routes above
+                win: this one only catches ids without a registry entry. */}
+            <Route path="/plugins/:pluginId" element={<ExternalPluginPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Suspense>

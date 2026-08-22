@@ -31,6 +31,7 @@ def manifest() -> PluginManifest:
                 path="/plugins/incident-center",
                 label_i18n="plugins.incident_center.nav",
                 icon="ShieldAlert",
+                permission=("incident_center", "view"),
                 section_i18n="nav.sections.plugins",
             )
         ],

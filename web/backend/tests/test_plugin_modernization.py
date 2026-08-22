@@ -123,7 +123,9 @@ def test_incident_center_manifest_is_free_and_operator_facing():
     item = incident_manifest()
     assert item.id == "incident_center"
     assert item.billing == "free"
+    assert item.version == "0.1.1"
     assert item.navigation[0].path == "/plugins/incident-center"
+    assert item.navigation[0].permission == ("incident_center", "view")
 
 
 @pytest.mark.asyncio

@@ -336,7 +336,7 @@ class GeoAnalyzer:
         # Configurable city distance threshold
         min_city_distance = config_service.get("violations_geo_max_city_distance_km", self.MIN_DISTANCE_FOR_DIFFERENT_CITIES_DEFAULT)
         configured_country_limit = int(
-            config_service.get("violations_geo_max_simultaneous_countries", 0) or 0
+            config_service.get("violations_geo_max_simultaneous_countries", 3) or 0
         )
         allowed_active_countries = (
             configured_country_limit
@@ -404,8 +404,17 @@ class GeoAnalyzer:
             )
             impossible_travel = True
         
-        # Анализ последовательных подключений
-        if len(connection_history) > 1 and not impossible_travel:
+        # История хранится на уровне подписки и не содержит стабильного
+        # идентификатора устройства. При двух и более разрешённых устройствах
+        # соседние записи могут принадлежать разным людям/телефонам в разных
+        # странах, поэтому строить из них один маршрут и объявлять
+        # impossible-travel нельзя. Массовое одновременное распределение всё
+        # равно контролируется лимитом active_countries выше.
+        single_device_history = max(1, int(user_device_count or 1)) == 1
+
+        # Анализ последовательных подключений безопасен только для подписки с
+        # одним устройством, где история действительно описывает один маршрут.
+        if len(connection_history) > 1 and not impossible_travel and single_device_history:
             sorted_history = sorted(
                 connection_history,
                 key=lambda x: x.get("connected_at") or datetime.min

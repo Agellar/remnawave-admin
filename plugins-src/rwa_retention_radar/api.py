@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from rwa_incident_hub.freshness import history_status
 
 from . import bedolaga, campaigns, data, settings as settings_mod, store
+from .scope import resolve_visible_user_uuids
 from .schemas import (
     CampaignHistoryResponse,
     CampaignArmIn,
@@ -49,6 +50,60 @@ CSV_COLUMNS = (
 )
 
 
+async def _overview_payload(ctx, visible_user_uuids) -> OverviewResponse:
+    """Build a scope-safe overview.
+
+    Daily snapshots are global.  Until per-scope historical snapshots exist,
+    a restricted request receives only current scoped values; showing global
+    trend/delta beside scoped counts would silently mix two populations.
+    """
+    db = ctx.db
+    th = await settings_mod.get_thresholds(ctx.settings)
+    safety = await settings_mod.get_safety(ctx.settings)
+    counts = await data.counts(db, th, visible_user_uuids)
+    totals = await data.totals(db, visible_user_uuids)
+    trend_days = int(th["trend_days"])
+    unrestricted = visible_user_uuids is None
+
+    cards = []
+    for key in data.SEGMENTS:
+        previous = await store.previous_value(db, key) if unrestricted else None
+        cards.append(
+            SegmentCard(
+                key=key,
+                users_count=counts[key],
+                delta=(
+                    None
+                    if previous is None
+                    else counts[key] - previous
+                ),
+                trend=(
+                    await store.trend(db, key, trend_days)
+                    if unrestricted
+                    else []
+                ),
+            )
+        )
+
+    ctx.telemetry.count("overview")
+    return OverviewResponse(
+        generated_at=datetime.now(timezone.utc),
+        total_users=totals["total"],
+        active_users=totals["active"],
+        segments=cards,
+        attention=[
+            SegmentUser(**user)
+            for user in await data.attention(
+                db, th, visible_user_uuids=visible_user_uuids
+            )
+        ],
+        history_since=await store.first_day(db) if unrestricted else None,
+        data_freshness=await history_status(
+            db, int(safety["max_data_age_minutes"])
+        ),
+    )
+
+
 def build_router(ctx) -> APIRouter:
     from web.backend.core.plugin_api import auth_deps
 
@@ -80,37 +135,9 @@ def build_router(ctx) -> APIRouter:
     # ── дашборд ──────────────────────────────────────────────────
 
     @router.get("/overview", response_model=OverviewResponse)
-    async def overview(_: Any = Depends(can_view)) -> OverviewResponse:
-        th = await settings_mod.get_thresholds(ctx.settings)
-        safety = await settings_mod.get_safety(ctx.settings)
-        counts = await data.counts(db, th)
-        totals = await data.totals(db)
-        trend_days = int(th["trend_days"])
-
-        cards = []
-        for key in data.SEGMENTS:
-            previous = await store.previous_value(db, key)
-            cards.append(
-                SegmentCard(
-                    key=key,
-                    users_count=counts[key],
-                    delta=None if previous is None else counts[key] - previous,
-                    trend=await store.trend(db, key, trend_days),
-                )
-            )
-
-        ctx.telemetry.count("overview")
-        return OverviewResponse(
-            generated_at=datetime.now(timezone.utc),
-            total_users=totals["total"],
-            active_users=totals["active"],
-            segments=cards,
-            attention=[SegmentUser(**u) for u in await data.attention(db, th)],
-            history_since=await store.first_day(db),
-            data_freshness=await history_status(
-                db, int(safety["max_data_age_minutes"])
-            ),
-        )
+    async def overview(admin: Any = Depends(can_view)) -> OverviewResponse:
+        visible = await resolve_visible_user_uuids(ctx, admin)
+        return await _overview_payload(ctx, visible)
 
     # ── сегмент ──────────────────────────────────────────────────
 
@@ -119,21 +146,31 @@ def build_router(ctx) -> APIRouter:
         key: str,
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
-        _: Any = Depends(can_view),
+        admin: Any = Depends(can_view),
     ) -> SegmentResponse:
         _check_segment(key)
         th = await settings_mod.get_thresholds(ctx.settings)
-        users = await data.list_segment(db, key, th, limit, offset)
+        visible = await resolve_visible_user_uuids(ctx, admin)
+        users = await data.list_segment(
+            db,
+            key,
+            th,
+            limit,
+            offset,
+            visible_user_uuids=visible,
+        )
         return SegmentResponse(
             key=key,
-            total=await data.count_segment(db, key, th),
+            total=await data.count_segment(db, key, th, visible),
             limit=limit,
             offset=offset,
             users=[SegmentUser(**u) for u in users],
         )
 
     @router.get("/segment/{key}/export")
-    async def export_segment(key: str, _: Any = Depends(can_export)) -> StreamingResponse:
+    async def export_segment(
+        key: str, admin: Any = Depends(can_export)
+    ) -> StreamingResponse:
         """Весь сегмент одним CSV — чтобы отдать его в рассылку.
 
         Потолок в 5000 строк: это выгрузка для кампании, а не дамп базы,
@@ -141,7 +178,15 @@ def build_router(ctx) -> APIRouter:
         """
         _check_segment(key)
         th = await settings_mod.get_thresholds(ctx.settings)
-        users = await data.list_segment(db, key, th, limit=5000, offset=0)
+        visible = await resolve_visible_user_uuids(ctx, admin)
+        users = await data.list_segment(
+            db,
+            key,
+            th,
+            limit=5000,
+            offset=0,
+            visible_user_uuids=visible,
+        )
 
         buffer = io.StringIO()
         writer = csv.writer(buffer, lineterminator="\n")
@@ -172,14 +217,21 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/campaign/preview", response_model=CampaignPreviewOut)
     async def campaign_preview(
-        body: CampaignPreviewIn, _: Any = Depends(can_campaign)
+        body: CampaignPreviewIn, admin: Any = Depends(can_campaign)
     ) -> CampaignPreviewOut:
         _check_segment(body.segment)
         th = await settings_mod.get_thresholds(ctx.settings)
         safety = await settings_mod.get_safety(ctx.settings)
         await _require_fresh(safety)
+        visible = await resolve_visible_user_uuids(ctx, admin)
         result = await campaigns.preview(
-            db, ctx, body.segment, th, body.message_text, safety=safety
+            db,
+            ctx,
+            body.segment,
+            th,
+            body.message_text,
+            safety=safety,
+            visible_user_uuids=visible,
         )
         result["sample"] = [SegmentUser(**u) for u in result["sample"]]
         return CampaignPreviewOut(**result)
@@ -195,6 +247,7 @@ def build_router(ctx) -> APIRouter:
         result = await campaigns.arm(
             db,
             confirm_token=body.confirm_token,
+            admin_account_id=getattr(admin, "account_id", None),
             admin_username=getattr(admin, "username", None),
             ttl_minutes=int(safety["arm_ttl_minutes"]),
         )
@@ -208,6 +261,7 @@ def build_router(ctx) -> APIRouter:
         th = await settings_mod.get_thresholds(ctx.settings)
         safety = await settings_mod.get_safety(ctx.settings)
         await _require_fresh(safety)
+        visible = await resolve_visible_user_uuids(ctx, admin)
         cfg = settings_mod.get_bedolaga_config()
         if not body.dry_run and not cfg.get("token"):
             raise HTTPException(status_code=503, detail="bedolaga_not_configured")
@@ -220,12 +274,14 @@ def build_router(ctx) -> APIRouter:
                 message_text=body.message_text.strip(),
                 token=body.confirm_token,
                 dry_run=body.dry_run,
+                admin_account_id=getattr(admin, "account_id", None),
                 admin_username=getattr(admin, "username", None),
                 th=th,
                 bedolaga_cfg=cfg,
                 safety=safety,
                 arm_token=body.arm_token,
                 idempotency_key=body.idempotency_key,
+                visible_user_uuids=visible,
             )
         except ValueError as exc:
             # stale_confirmation / empty_audience — это не сбой сервера,

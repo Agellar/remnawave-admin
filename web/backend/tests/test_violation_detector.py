@@ -10,7 +10,7 @@
 
 Это первые unit-тесты детектора в проекте (раньше их не было вообще).
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -78,16 +78,23 @@ async def run_check(det, conns, *, history=None, shared=None, srh=None, baseline
 
 @pytest.mark.asyncio
 async def test_geo_impossible_travel_creates_violation_on_first_hit():
-    """2 IP разных стран одновременно -> geo=90. H2 strong-signal bypass должен создать
+    """4 IP из четырёх стран одновременно -> geo=90. H2 strong-signal bypass должен создать
     нарушение ДАЖЕ на первом срабатывании (consistency ×0.3), а не утопить в no_action."""
     geo_map = {
         "1.1.1.1": meta("1.1.1.1", country_code="RU", city="Moscow", latitude=55.7, longitude=37.6,
                         asn=1, asn_org="ISP-A", connection_type="residential"),
         "2.2.2.2": meta("2.2.2.2", country_code="DE", city="Berlin", latitude=52.5, longitude=13.4,
                         asn=2, asn_org="ISP-B", connection_type="residential"),
+        "3.3.3.3": meta("3.3.3.3", country_code="US", city="New York", latitude=40.7, longitude=-74.0,
+                        asn=3, asn_org="ISP-C", connection_type="residential"),
+        "4.4.4.4": meta("4.4.4.4", country_code="JP", city="Tokyo", latitude=35.7, longitude=139.7,
+                        asn=4, asn_org="ISP-D", connection_type="residential"),
     }
     det = make_detector(geo_map, recent_violations=0)  # ПЕРВОЕ срабатывание
-    res = await run_check(det, [conn("1.1.1.1", 60), conn("2.2.2.2", 60)])
+    res = await run_check(
+        det,
+        [conn("1.1.1.1", 60), conn("2.2.2.2", 60), conn("3.3.3.3", 60), conn("4.4.4.4", 60)],
+    )
     assert res is not None
     assert res.breakdown["geo"].score == 90.0
     assert res.breakdown["geo"].impossible_travel_detected is True
@@ -109,6 +116,32 @@ async def test_geo_multiple_countries_within_device_limit_is_not_violation():
     assert res.breakdown["geo"].score < 90.0
     assert res.breakdown["geo"].impossible_travel_detected is False
     assert not any("слишком большого числа стран" in reason for reason in res.reasons)
+
+
+@pytest.mark.asyncio
+async def test_geo_history_does_not_merge_two_devices_into_impossible_travel():
+    """Alternating RU/UA history may belong to two allowed devices.
+
+    Connection history has no device identifier, so treating adjacent rows as
+    one physical route would accuse an ordinary family/shared subscription.
+    """
+    geo_map = {
+        "1.1.1.1": meta("1.1.1.1", country_code="RU", city="Moscow", latitude=55.7, longitude=37.6,
+                        asn=1, asn_org="ISP-A", connection_type="residential"),
+        "2.2.2.2": meta("2.2.2.2", country_code="UA", city="Kyiv", latitude=50.4, longitude=30.5,
+                        asn=2, asn_org="ISP-B", connection_type="residential"),
+    }
+    now = datetime.now(timezone.utc)
+    history = [
+        {"ip_address": "1.1.1.1", "connected_at": now - timedelta(minutes=10)},
+        {"ip_address": "2.2.2.2", "connected_at": now},
+    ]
+    det = make_detector(geo_map, recent_violations=0)
+    res = await run_check(det, [conn("1.1.1.1", 60)], history=history, devices=2)
+
+    assert res.breakdown["geo"].score == 0.0
+    assert res.breakdown["geo"].impossible_travel_detected is False
+    assert not any("Нереалистичное перемещение" in reason for reason in res.reasons)
 
 
 # ── TEMPORAL ──────────────────────────────────────────────────────
@@ -201,6 +234,150 @@ async def test_hwid_below_hard_block_accounts_stays_temp_block():
     assert res.breakdown["hwid"].max_accounts_per_hwid == 4
     assert 80.0 <= res.total < 95.0
     assert res.recommended_action.value != "hard_block"
+
+
+@pytest.mark.asyncio
+async def test_hwid_email_grouping_keeps_multitariff_clean():
+    """Мультитариф без Telegram: две подписки одного email на общем устройстве — это
+    ОДИН аккаунт, нарушения быть не должно. До группировки по email каждый UUID без
+    telegram_id считался отдельным аккаунтом, и легальный апгрейд выглядел как
+    кросс-аккаунт."""
+    geo_map = {"1.1.1.1": meta("1.1.1.1", country_code="RU", asn=1, asn_org="ISP",
+                               connection_type="residential")}
+    shared = [{
+        "hwid": "HW1", "self_telegram_id": None, "self_email": "Dacx@Mail.Ru",
+        "self_is_trial": False, "self_is_active": True,
+        "other_users": [
+            {"uuid": "U1", "telegram_id": None, "email": "dacx@mail.ru", "username": "dacx-trial",
+             "status": "EXPIRED", "is_trial": True, "is_active": False},
+        ],
+    }]
+    det = make_detector(geo_map, recent_violations=0)
+    res = await run_check(det, [conn("1.1.1.1", 60)], shared=shared)
+    assert res.breakdown["hwid"].max_accounts_per_hwid == 1
+    assert res.breakdown["hwid"].score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_hwid_parallel_active_trials_hard_blocks():
+    """Два РАЗНЫХ аккаунта с живым триалом на одном устройстве -> extreme abuse,
+    hard_block. Порога по числу аккаунтов (дефолт 2) двух аккаунтов не хватает —
+    срабатывает именно триальная проверка."""
+    geo_map = {"1.1.1.1": meta("1.1.1.1", country_code="RU", asn=1, asn_org="ISP",
+                               connection_type="residential")}
+    shared = [{
+        "hwid": "HW1", "self_telegram_id": 7948421388, "self_email": None,
+        "self_is_trial": True, "self_is_active": True,
+        "other_users": [
+            {"uuid": "U1", "telegram_id": 6283030269, "email": None, "username": "trial2",
+             "status": "ACTIVE", "is_trial": True, "is_active": True},
+        ],
+    }]
+    det = make_detector(geo_map, recent_violations=0)
+    res = await run_check(det, [conn("1.1.1.1", 60)], shared=shared)
+    assert res.breakdown["hwid"].max_active_trials_per_hwid == 2
+    assert res.breakdown["hwid"].max_accounts_per_hwid == 2
+    assert res.total == 100.0
+    assert res.recommended_action.value == "hard_block"
+    # Ровно одна строка: анализатор и детектор формулируют находку одинаково,
+    # дедупликация причин схлопывает их в одну — админ не должен видеть дубль
+    assert len([r for r in res.reasons if "активным триалом" in r]) == 1
+
+
+@pytest.mark.asyncio
+async def test_hwid_trial_abuse_collects_accomplices():
+    """В соучастники попадают только чужие подписки с ЖИВЫМ триалом на том же HWID:
+    их блокируют вместе с проверяемым, иначе связка остаётся рабочей. Платный и
+    истёкший аккаунты рядом на устройстве под блокировку не идут."""
+    geo_map = {"1.1.1.1": meta("1.1.1.1", country_code="RU", asn=1, asn_org="ISP",
+                               connection_type="residential")}
+    shared = [{
+        "hwid": "HW1", "self_telegram_id": 100, "self_email": None,
+        "self_is_trial": True, "self_is_active": True,
+        "other_users": [
+            {"uuid": "U-trial", "telegram_id": 201, "email": None, "username": "trial2",
+             "status": "ACTIVE", "is_trial": True, "is_active": True},
+            {"uuid": "U-paid", "telegram_id": 202, "email": None, "username": "payer",
+             "status": "ACTIVE", "is_trial": False, "is_active": True},
+            {"uuid": "U-old", "telegram_id": 203, "email": None, "username": "old",
+             "status": "EXPIRED", "is_trial": True, "is_active": False},
+        ],
+    }]
+    det = make_detector(geo_map, recent_violations=0)
+    res = await run_check(det, [conn("1.1.1.1", 60)], shared=shared)
+    assert res.breakdown["hwid"].active_trial_accomplices == ["U-trial"]
+    assert res.recommended_action.value == "hard_block"
+    assert any("Связанные аккаунты" in r for r in res.reasons)
+
+
+@pytest.mark.asyncio
+async def test_hwid_no_accomplices_when_threshold_not_hit():
+    """Порог не пробит — список соучастников пуст, блокировать некого."""
+    geo_map = {"1.1.1.1": meta("1.1.1.1", country_code="RU", asn=1, asn_org="ISP",
+                               connection_type="residential")}
+    shared = [{
+        "hwid": "HW1", "self_telegram_id": 100, "self_email": None,
+        "self_is_trial": True, "self_is_active": True,
+        "other_users": [
+            {"uuid": "U-paid", "telegram_id": 202, "email": None, "username": "payer",
+             "status": "ACTIVE", "is_trial": False, "is_active": True},
+        ],
+    }]
+    det = make_detector(geo_map, recent_violations=0)
+    res = await run_check(det, [conn("1.1.1.1", 60)], shared=shared)
+    assert not res.breakdown["hwid"].active_trial_accomplices
+
+
+@pytest.mark.asyncio
+async def test_hwid_expired_trial_next_to_active_is_clean():
+    """Истёкший триал рядом с живой подпиской — обычный жизненный цикл, а не абуз:
+    живой триал на устройстве один, порог не пробит."""
+    geo_map = {"1.1.1.1": meta("1.1.1.1", country_code="RU", asn=1, asn_org="ISP",
+                               connection_type="residential")}
+    shared = [{
+        "hwid": "HW1", "self_telegram_id": 100, "self_email": None,
+        "self_is_trial": True, "self_is_active": True,
+        "other_users": [
+            {"uuid": "U1", "telegram_id": 201, "email": None, "username": "paid",
+             "status": "ACTIVE", "is_trial": False, "is_active": True},
+            {"uuid": "U2", "telegram_id": 201, "email": None, "username": "old-trial",
+             "status": "DISABLED", "is_trial": True, "is_active": False},
+        ],
+    }]
+    det = make_detector(geo_map, recent_violations=0)
+    res = await run_check(det, [conn("1.1.1.1", 60)], shared=shared)
+    assert res.breakdown["hwid"].max_active_trials_per_hwid == 1
+    assert res.breakdown["hwid"].score == 0.0
+    assert res.recommended_action.value != "hard_block"
+
+
+@pytest.mark.asyncio
+async def test_hwid_second_trial_under_own_telegram_is_abuse():
+    """Обход, пойманный 22.08: человек с истёкшим триалом удаляет устройство,
+    заводит вторую подписку через email, цепляет к ней тот же HWID и привязывает
+    свой же telegram_id. После привязки аккаунт для детектора снова один, живой
+    триал один, подписок две из десяти разрешённых — все прежние пороги молчат.
+    Ловит только счёт пробных подписок одного аккаунта на устройстве."""
+    geo_map = {"1.1.1.1": meta("1.1.1.1", country_code="RU", asn=1, asn_org="ISP",
+                               connection_type="residential")}
+    shared = [{
+        "hwid": "HW1", "self_telegram_id": 100, "self_email": None,
+        "self_is_trial": True, "self_is_active": True,
+        "other_users": [
+            {"uuid": "U1", "telegram_id": 100, "email": None, "username": "old-trial",
+             "status": "DISABLED", "is_trial": True, "is_active": False,
+             "removed_at": datetime.now(timezone.utc)},
+        ],
+    }]
+    det = make_detector(geo_map, recent_violations=0)
+    res = await run_check(det, [conn("1.1.1.1", 60)], shared=shared)
+    hwid = res.breakdown["hwid"]
+    assert hwid.max_active_trials_per_hwid == 1, "живой триал один — старые пороги слепы"
+    assert hwid.max_accounts_per_hwid == 1, "после привязки telegram_id аккаунт один"
+    assert hwid.per_account_abuse is False, "две подписки из десяти разрешённых"
+    assert hwid.max_trial_subs_per_hwid == 2
+    assert hwid.score == 100.0
+    assert res.recommended_action.value == "hard_block"
 
 
 @pytest.mark.asyncio
@@ -436,3 +613,78 @@ async def test_profile_geo_baseline_revived_via_geoip():
     history = [{"ip_address": "77.88.8.8", "connected_at": datetime.utcnow() - timedelta(days=1)}]
     bl = await pa.build_baseline("u", days=30, connection_history=history)
     assert "RU" in bl["typical_countries"], "гео-baseline должен резолвиться через GeoIP по known_ips"
+
+
+# ── CGNAT: пул оператора считается источниками, а не адресами ──────
+
+@pytest.mark.asyncio
+async def test_cgnat_pool_does_not_look_like_sharing():
+    """Жалоба из чата: CGNAT раздал одному клиенту пачку адресов.
+
+    Двенадцать адресов МегаФона и двенадцать Билайна — по логам это был
+    один человек, открывший соединения к одному хосту. По адресам детектор
+    видел «24 разных», по источникам видит два.
+    """
+    geo_map = {}
+    conns = []
+    for i in range(2, 14):
+        ip = f"178.177.22.{i}"
+        geo_map[ip] = meta(ip, country_code="RU", city="Moscow", latitude=55.7, longitude=37.6,
+                           asn=31133, asn_org="PJSC MegaFon", connection_type="residential")
+        conns.append(conn(ip, 60 + i))
+    for i in range(179, 191):
+        ip = f"81.9.21.{i}"
+        geo_map[ip] = meta(ip, country_code="RU", city="Moscow", latitude=55.7, longitude=37.6,
+                           asn=16345, asn_org="PVimpelCom", connection_type="residential")
+        conns.append(conn(ip, 60 + i))
+
+    det = make_detector(geo_map, recent_violations=3)
+    res = await run_check(det, conns, devices=2)
+
+    assert res.breakdown["temporal"].score == 0.0, "два источника при двух устройствах — не шаринг"
+    assert res.recommended_action.value in ("no_action", "monitor")
+
+
+@pytest.mark.asyncio
+async def test_real_sharing_through_hosting_still_caught():
+    """Обратная сторона: у хостера соседние адреса — разные машины.
+
+    Схлопывание там не применяется, иначе прокси-пул на одном /24
+    превратился бы в «одного человека» и шаринг стал бы невидим.
+    """
+    geo_map = {}
+    conns = []
+    for i in range(1, 7):
+        ip = f"5.9.10.{i}"
+        geo_map[ip] = meta(ip, country_code="DE", city="Nuremberg", latitude=49.4, longitude=11.0,
+                           asn=24940, asn_org="Hetzner Online GmbH", connection_type="hosting")
+        conns.append(conn(ip, 60 + i))
+
+    det = make_detector(geo_map, recent_violations=3)
+    res = await run_check(det, conns, devices=1)
+
+    assert res.breakdown["temporal"].score == 100.0, "шесть машин хостера — это шаринг"
+
+
+@pytest.mark.asyncio
+async def test_violation_text_names_sources_and_addresses():
+    """Разбирать инцидент нужно по числам: сколько источников и сколько адресов."""
+    geo_map = {}
+    conns = []
+    for i in range(1, 9):
+        ip = f"178.177.22.{i}"
+        geo_map[ip] = meta(ip, country_code="RU", city="Moscow", latitude=55.7, longitude=37.6,
+                           asn=31133, asn_org="PJSC MegaFon", connection_type="residential")
+        conns.append(conn(ip, 60 + i))
+    # девятый адрес из чужой сети — источников станет два, порог при одном
+    # устройстве это уже превышает
+    geo_map["203.0.113.7"] = meta("203.0.113.7", country_code="RU", city="Moscow",
+                                  latitude=55.7, longitude=37.6, asn=64500,
+                                  asn_org="Some ISP", connection_type="fixed")
+    conns.append(conn("203.0.113.7", 70))
+
+    det = make_detector(geo_map, recent_violations=3)
+    res = await run_check(det, conns, devices=1)
+
+    reasons = " ".join(res.breakdown["temporal"].reasons)
+    assert "источник" in reasons and "адрес" in reasons, reasons

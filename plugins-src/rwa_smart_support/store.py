@@ -38,7 +38,9 @@ CREATE TABLE IF NOT EXISTS smart_support_correlations (
     member_uuids   TEXT[] NOT NULL DEFAULT '{}',
     window_start   TIMESTAMPTZ NOT NULL,
     window_end     TIMESTAMPTZ NOT NULL,
-    computed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    computed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    total_users    INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS smart_support_correlations_computed_idx
@@ -67,11 +69,33 @@ CREATE INDEX IF NOT EXISTS smart_support_feedback_rule_idx
     ON smart_support_feedback (rule_id, created_at DESC);
 """
 
+# Upgrades for installations that already have the pre-1.4.3 table. The
+# dedupe runs before the unique index so an old append-only cache cannot make
+# startup fail. Every statement is idempotent.
+CORRELATION_MIGRATIONS = (
+    "ALTER TABLE smart_support_correlations ADD COLUMN IF NOT EXISTS "
+    "last_active_at TIMESTAMPTZ",
+    "ALTER TABLE smart_support_correlations ADD COLUMN IF NOT EXISTS total_users INTEGER",
+    "UPDATE smart_support_correlations SET last_active_at = computed_at "
+    "WHERE last_active_at IS NULL",
+    "ALTER TABLE smart_support_correlations ALTER COLUMN last_active_at SET DEFAULT NOW()",
+    "ALTER TABLE smart_support_correlations ALTER COLUMN last_active_at SET NOT NULL",
+    """DELETE FROM smart_support_correlations old
+       USING smart_support_correlations fresh
+       WHERE old.kind = fresh.kind AND old.key = fresh.key
+         AND (old.computed_at < fresh.computed_at OR
+              (old.computed_at = fresh.computed_at AND old.id < fresh.id))""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS smart_support_correlations_kind_key_idx "
+    "ON smart_support_correlations (kind, key)",
+)
+
 
 async def ensure_schema(db) -> None:
     for statement in (s.strip() for s in DDL.split(";")):
         if statement:
             await db.execute(statement)
+    for statement in CORRELATION_MIGRATIONS:
+        await db.execute(statement)
 
 
 # ── журнал действий ──────────────────────────────────────────────
@@ -149,6 +173,7 @@ async def sessions_recent(
     offset: int,
     action_id: Optional[str] = None,
     admin_username: Optional[str] = None,
+    visible_user_uuids: Optional[set[str]] = None,
 ):
     """Журнал с необязательными фильтрами. Условия собираем позиционно —
     asyncpg не умеет именованные параметры."""
@@ -160,6 +185,9 @@ async def sessions_recent(
     if admin_username:
         args.append(f"%{admin_username}%")
         where.append(f"admin_username ILIKE ${len(args)}")
+    if visible_user_uuids is not None:
+        args.append(sorted(visible_user_uuids))
+        where.append(f"target_user_uuid = ANY(${len(args)}::uuid[])")
     clause = f"WHERE {' AND '.join(where)}" if where else ""
 
     total = await db.fetchval(
@@ -175,34 +203,64 @@ async def sessions_recent(
 
 # ── корреляции ───────────────────────────────────────────────────
 
-async def replace_correlations(db, clusters: List[Dict[str, Any]], max_age_minutes: float) -> None:
-    """Записать свежий срез и подчистить протухший."""
+async def replace_correlations(
+    db, clusters: List[Dict[str, Any]], history_minutes: float
+) -> None:
+    """Upsert the fresh slice, retaining recently resolved clusters."""
     await db.execute(
         "DELETE FROM smart_support_correlations "
-        "WHERE computed_at < NOW() - ($1 || ' minutes')::interval",
-        str(int(max_age_minutes)),
+        "WHERE last_active_at < NOW() - ($1 || ' minutes')::interval",
+        str(max(1, int(history_minutes))),
     )
+    # ASN rows from pre-1.4.3-local builds were derived from violations and can
+    # mislabel a large ISP as an outage. They are disposable correlation cache.
+    await db.execute("DELETE FROM smart_support_correlations WHERE kind = 'asn'")
     for c in clusters:
         await db.execute(
             """INSERT INTO smart_support_correlations
-                   (kind, key, label, affected_users, member_uuids, window_start, window_end)
-               VALUES ($1, $2, $3, $4, $5::text[], $6, $7)""",
+                   (kind, key, label, affected_users, member_uuids, window_start,
+                    window_end, total_users, computed_at, last_active_at)
+               VALUES ($1, $2, $3, $4, $5::text[], $6, $7, $8, NOW(), NOW())
+               ON CONFLICT (kind, key) DO UPDATE SET
+                   label = EXCLUDED.label,
+                   affected_users = EXCLUDED.affected_users,
+                   member_uuids = EXCLUDED.member_uuids,
+                   window_start = EXCLUDED.window_start,
+                   window_end = EXCLUDED.window_end,
+                   total_users = EXCLUDED.total_users,
+                   computed_at = NOW(),
+                   last_active_at = NOW()""",
             c["kind"], c["key"], c.get("label"), int(c["affected_users"]),
             [str(u) for u in c.get("member_uuids", [])],
-            c["window_start"], c["window_end"],
+            c["window_start"], c["window_end"], c.get("total_users"),
         )
 
 
-async def correlations_for_user(db, user_uuid: str, max_age_minutes: float):
+async def correlations_for_user(
+    db,
+    user_uuid: str,
+    max_age_minutes: float,
+    history_minutes: float | None = None,
+):
+    history = max(int(history_minutes or max_age_minutes), int(max_age_minutes), 1)
     rows = await db.fetch(
-        """SELECT kind, key, label, affected_users, window_start, window_end
+        """SELECT kind, key, label, affected_users, total_users,
+                  window_start, window_end,
+                  (last_active_at >= NOW() - ($2 || ' minutes')::interval) AS is_active,
+                  EXTRACT(EPOCH FROM (NOW() - last_active_at)) / 60.0 AS age_minutes
            FROM smart_support_correlations
            WHERE $1 = ANY(member_uuids)
-             AND computed_at >= NOW() - ($2 || ' minutes')::interval
-           ORDER BY affected_users DESC""",
-        str(user_uuid), str(int(max_age_minutes)),
+              AND last_active_at >= NOW() - ($3 || ' minutes')::interval
+           ORDER BY is_active DESC, affected_users DESC""",
+        str(user_uuid), str(max(1, int(max_age_minutes))), str(history),
     )
-    return [dict(r) for r in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        if item.get("age_minutes") is not None:
+            item["age_minutes"] = max(0, int(float(item["age_minutes"])))
+        result.append(item)
+    return result
 
 
 # ── счётчик ИИ-вызовов ───────────────────────────────────────────
@@ -225,6 +283,22 @@ async def bump_ai_usage(db) -> int:
            ON CONFLICT (period) DO UPDATE SET used = smart_support_ai_usage.used + 1
            RETURNING used""",
         current_period(),
+    ) or 0)
+
+
+async def reserve_ai_usage(db, limit: int = 0) -> int:
+    """Atomically reserve one outbound AI call within the monthly cap.
+
+    ``limit=0`` means unlimited. Returning zero means another request already
+    consumed the final slot, so the caller must not contact a provider.
+    """
+    return int(await db.fetchval(
+        """INSERT INTO smart_support_ai_usage (period, used) VALUES ($1, 1)
+           ON CONFLICT (period) DO UPDATE
+             SET used = smart_support_ai_usage.used + 1
+             WHERE $2 = 0 OR smart_support_ai_usage.used < $2
+           RETURNING used""",
+        current_period(), max(0, int(limit)),
     ) or 0)
 
 

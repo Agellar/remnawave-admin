@@ -6,20 +6,33 @@ import { Activity, CheckCircle, ChevronDown, Clock, Globe2, History, Loader2, Ne
 import { toast } from 'sonner'
 
 import LicenseBanner from '@/components/plugins/license'
+import { useHasPermission } from '@/components/PermissionGate'
 import { Button } from '@/components/ui/button'
 
 import DataList from './DataList'
 
-import { analyzeAlert, asLicenseError, fetchAlerts, fetchHosters, fetchOverview, fetchProbes, fetchStatus, runProbeNow } from './api'
+import {
+  analyzeAlert,
+  asLicenseError,
+  fetchAlerts,
+  fetchHosters,
+  fetchOverview,
+  fetchProbes,
+  fetchStatus,
+  runProbeNow,
+  sendAlertFeedback,
+} from './api'
 import type {
   RadarAlert,
   RadarNodeDip,
+  RadarSelfAlert,
   RadarOverview,
   RadarProbes,
   RadarProbeState,
   RadarSite,
   RadarStatus,
   RadarTick,
+  RadarVerdict,
 } from './types'
 
 const TRANSPORT_LABELS: Record<string, string> = {
@@ -143,6 +156,10 @@ export default function RadarPage() {
 
       {!licenseError && overview.data && <NetworkPulse pulse={overview.data.pulse} />}
 
+      {status.data?.self_alert && !status.data.self_alert.resolved && (
+        <SelfAlertCard alert={status.data.self_alert} />
+      )}
+
       {(status.data?.open_dips?.length ?? 0) > 0 && (
         <section className="space-y-3">
           <h2 className="text-sm font-semibold text-white uppercase tracking-wider flex items-center gap-2">
@@ -219,6 +236,11 @@ export default function RadarPage() {
                 title: t('plugins.block_radar.col_resolved'),
                 nowrap: true,
                 cell: (a) => (a.resolved_at ? formatTs(a.resolved_at) : '—'),
+              },
+              {
+                title: t('plugins.block_radar.col_feedback'),
+                nowrap: true,
+                cell: (a) => <FeedbackButtons alert={a} compact />,
               },
             ]}
           />
@@ -910,6 +932,99 @@ function AlertCard({ alert }: { alert: RadarAlert }) {
           {t(analysis ? 'plugins.block_radar.ai.refresh' : 'plugins.block_radar.ai.analyze')}
         </Button>
       </div>
+      <FeedbackButtons alert={alert} />
+    </div>
+  )
+}
+
+
+/**
+ * «Блокировка была?» — единственный способ измерить, насколько радар точен.
+ * Сам детектор видит только просевший онлайн; была ли то блокировка, знает
+ * лишь тот, у кого она случилась.
+ *
+ * Кнопки парные: одна «ложная тревога» не отличала бы «всё верно» от
+ * «нажать некому». Ответ можно переменить — подсвечен текущий.
+ */
+function FeedbackButtons({ alert, compact = false }: { alert: RadarAlert; compact?: boolean }) {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const canEdit = useHasPermission('block_radar', 'edit')
+
+  const mark = useMutation({
+    mutationFn: (verdict: RadarVerdict) => sendAlertFeedback(alert.id, verdict),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['block-radar-alerts-open'] })
+      queryClient.invalidateQueries({ queryKey: ['block-radar-alerts-history'] })
+    },
+  })
+
+  // Пока запрос в пути, показываем выбранное: ждать инвалидации ради
+  // подсветки кнопки — лишняя секунда сомнения.
+  const current = mark.isPending ? mark.variables : (alert.feedback ?? null)
+
+  if (!canEdit) {
+    if (!current) return compact ? <span className="text-dark-500">—</span> : null
+    const label = t(
+      current === 'confirmed'
+        ? 'plugins.block_radar.feedback_marked_yes'
+        : 'plugins.block_radar.feedback_marked_no',
+    )
+    return compact ? (
+      <span className="text-xs text-dark-300">{label}</span>
+    ) : (
+      <p className="text-xs text-dark-400">{label}</p>
+    )
+  }
+
+  const button = (verdict: RadarVerdict, label: string, tone: string) => (
+    <button
+      type="button"
+      onClick={() => mark.mutate(verdict)}
+      disabled={mark.isPending}
+      aria-pressed={current === verdict}
+      className={`text-[11px] px-2 py-1 rounded border transition-colors disabled:opacity-50 ${
+        current === verdict
+          ? tone
+          : 'border-white/10 text-dark-300 hover:text-white hover:border-white/25'
+      }`}
+    >
+      {label}
+    </button>
+  )
+
+  const buttons = (
+    <>
+      {button(
+        'confirmed',
+        t('plugins.block_radar.feedback_yes'),
+        'border-red-500/40 bg-red-500/15 text-red-300',
+      )}
+      {button(
+        'false_positive',
+        t('plugins.block_radar.feedback_no'),
+        'border-emerald-500/40 bg-emerald-500/15 text-emerald-300',
+      )}
+    </>
+  )
+
+  // В истории места на подсказку нет — там ценно само действие: инцидент
+  // часто становится понятен уже после того, как закончился.
+  if (compact) {
+    return <div className="flex flex-wrap gap-1 justify-end">{buttons}</div>
+  }
+
+  return (
+    <div className="pt-1 border-t border-white/5 space-y-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-dark-400">{t('plugins.block_radar.feedback_prompt')}</span>
+        {buttons}
+      </div>
+      {mark.isError ? (
+        <p className="text-xs text-red-300">{t('plugins.block_radar.feedback_failed')}</p>
+      ) : (
+        !current && <p className="text-[11px] text-dark-500">{t('plugins.block_radar.feedback_hint')}</p>
+      )}
     </div>
   )
 }
@@ -944,6 +1059,43 @@ function ExpiryNotice({ status }: { status: RadarStatus | null }) {
         <p className="text-xs text-dark-300">{t('plugins.block_radar.expiry_hint')}</p>
       </div>
     </div>
+  )
+}
+
+
+function SelfAlertCard({ alert }: { alert: RadarSelfAlert }) {
+  const { t } = useTranslation()
+  const round = (v: number | null) => (v === null ? '—' : Math.round(v))
+
+  return (
+    <section className="glass-card p-4 ring-1 ring-inset ring-amber-500/25 space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">
+          {t('plugins.block_radar.self_badge')}
+        </span>
+        <span className="text-xs text-dark-400 ml-auto whitespace-nowrap">
+          {formatTs(alert.since)}
+        </span>
+      </div>
+      <div className="text-sm text-white font-medium">
+        {t('plugins.block_radar.self_title')}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-dark-300">
+        <span>
+          {t('plugins.block_radar.self_yours')}:{' '}
+          <span className="text-white font-mono tabular-nums">
+            {alert.online} / {round(alert.baseline)}
+          </span>
+        </span>
+        <span>
+          {t('plugins.block_radar.self_neighbours', { n: alert.panels })}:{' '}
+          <span className="text-white font-mono tabular-nums">
+            {alert.neighbours} / {round(alert.neighbours_baseline)}
+          </span>
+        </span>
+      </div>
+      <p className="text-xs text-dark-300">{t('plugins.block_radar.self_hint')}</p>
+    </section>
   )
 }
 

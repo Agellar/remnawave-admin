@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS retention_radar_campaign_arms (
     token_hash      TEXT PRIMARY KEY,
     confirm_token   TEXT NOT NULL,
     idempotency_key TEXT NOT NULL UNIQUE,
+    admin_account_id BIGINT,
     admin_username  TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at      TIMESTAMPTZ NOT NULL,
@@ -61,6 +62,13 @@ CREATE TABLE IF NOT EXISTS retention_radar_campaign_arms (
 );
 CREATE INDEX IF NOT EXISTS retention_radar_campaign_arms_expires_idx
     ON retention_radar_campaign_arms (expires_at);
+
+-- Backward-safe upgrade for installations that created the arms table before
+-- account-backed ownership was introduced.  Old, short-lived rows continue to
+-- work through the username fallback in consume_arm; all new account-backed
+-- rows bind to the immutable admin_accounts.id.
+ALTER TABLE retention_radar_campaign_arms
+    ADD COLUMN IF NOT EXISTS admin_account_id BIGINT;
 
 -- Кому и когда уже писали. Нужна не для отчётности, а чтобы человек не
 -- получил три «персональных предложения» за неделю: перед каждой
@@ -198,6 +206,7 @@ async def issue_arm(
     token_hash: str,
     confirm_token: str,
     idempotency_key: str,
+    admin_account_id: int | None,
     admin_username: str | None,
     ttl_minutes: int,
 ) -> None:
@@ -207,11 +216,13 @@ async def issue_arm(
     )
     await db.execute(
         """INSERT INTO retention_radar_campaign_arms
-                  (token_hash, confirm_token, idempotency_key, admin_username, expires_at)
-            VALUES ($1,$2,$3,$4,NOW()+make_interval(mins => $5))""",
+                  (token_hash, confirm_token, idempotency_key,
+                   admin_account_id, admin_username, expires_at)
+            VALUES ($1,$2,$3,$4,$5,NOW()+make_interval(mins => $6))""",
         token_hash,
         confirm_token,
         idempotency_key,
+        admin_account_id,
         admin_username,
         int(ttl_minutes),
     )
@@ -223,18 +234,25 @@ async def consume_arm(
     token_hash: str,
     confirm_token: str,
     idempotency_key: str,
+    admin_account_id: int | None,
     admin_username: str | None,
 ) -> bool:
     arm_id = await db.fetchval(
         """UPDATE retention_radar_campaign_arms
               SET used_at=NOW()
             WHERE token_hash=$1 AND confirm_token=$2 AND idempotency_key=$3
-              AND admin_username IS NOT DISTINCT FROM $4
+              AND (
+                    (admin_account_id IS NOT NULL AND admin_account_id=$4)
+                    OR
+                    (admin_account_id IS NULL
+                     AND admin_username IS NOT DISTINCT FROM $5)
+                  )
               AND used_at IS NULL AND expires_at > NOW()
             RETURNING token_hash""",
         token_hash,
         confirm_token,
         idempotency_key,
+        admin_account_id,
         admin_username,
     )
     return bool(arm_id)

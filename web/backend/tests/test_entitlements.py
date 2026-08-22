@@ -190,3 +190,22 @@ def test_noop_plugin_discovery(monkeypatch, keypair):
     # хотя роут монтировался нормально.
     paths = set(app.openapi().get("paths") or {})
     assert "/api/v2/plugins/noop/ping" in paths
+
+
+def test_baked_plugin_can_precede_same_id_wheel(monkeypatch):
+    from web.backend.core import plugins as loader
+
+    wheel = loader.PluginManifest(id="smart_support", name="wheel", version="1.4.3")
+    baked = loader.PluginManifest(id="smart_support", name="baked", version="1.4.3+agellar.1")
+    monkeypatch.setattr(
+        loader, "_iter_entry_point_factories", lambda: [("wheel", lambda: wheel)]
+    )
+    monkeypatch.setattr(
+        loader, "_iter_dev_factories", lambda: [("baked", lambda: baked)]
+    )
+    monkeypatch.setenv("RWA_DEV_PLUGINS_PREFER", "true")
+
+    found = loader.discover_plugins()
+
+    assert len(found) == 1
+    assert found[0].name == "baked"
