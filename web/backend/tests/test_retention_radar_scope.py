@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,6 +13,25 @@ from rwa_retention_radar import api, campaigns, data, scope, store
 
 USER_A = "00000000-0000-0000-0000-00000000000a"
 USER_B = "00000000-0000-0000-0000-00000000000b"
+
+
+@pytest.mark.asyncio
+async def test_schema_split_never_executes_comment_only_fragments():
+    db = AsyncMock()
+
+    await store.ensure_schema(db)
+
+    statements = [call.args[0] for call in db.execute.await_args_list]
+    executable = [
+        "\n".join(
+            line for line in statement.splitlines()
+            if not line.lstrip().startswith("--")
+        ).strip()
+        for statement in statements
+    ]
+    assert executable
+    assert all(executable)
+    assert all(re.match(r"^(CREATE|ALTER)\b", statement) for statement in executable)
 
 
 def _ctx(db=None):

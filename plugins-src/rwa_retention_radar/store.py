@@ -65,7 +65,7 @@ CREATE INDEX IF NOT EXISTS retention_radar_campaign_arms_expires_idx
 
 -- Backward-safe upgrade for installations that created the arms table before
 -- account-backed ownership was introduced.  Old, short-lived rows continue to
--- work through the username fallback in consume_arm; all new account-backed
+-- work through the username fallback in consume_arm. All new account-backed
 -- rows bind to the immutable admin_accounts.id.
 ALTER TABLE retention_radar_campaign_arms
     ADD COLUMN IF NOT EXISTS admin_account_id BIGINT;
