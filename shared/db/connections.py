@@ -3,15 +3,12 @@ Connections mixin — user connections, partitioning, torrent events.
 """
 import asyncio
 import json
-import re
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
-
-import asyncpg
 
 from shared.logger import logger
 from shared.db_schema import USER_CONNECTIONS_TABLE, VIOLATIONS_TABLE, USERS_TABLE, NODES_TABLE
-from shared.db_query import select_sql, insert_sql, update_sql, delete_sql
+from shared.db_query import select_sql, insert_sql, update_sql
 
 
 class ConnectionsMixin:
@@ -218,6 +215,15 @@ class ConnectionsMixin:
 
                 ip_cast = "::inet" if self._ip_col_is_inet else ""
 
+                # Сравнивать ip_address НАПРЯМУЮ, без ::text с обеих сторон.
+                # Совместимость INET/VARCHAR держит ip_cast на стороне значения
+                # (см. 75af1947) — приведение колонки к тексту поверх него уже
+                # ничего не чинит, а на INET-инстансах мешает: ip_address
+                # выпадает из Index Cond частичного индекса
+                # (user_uuid, ip_address) WHERE disconnected_at IS NULL
+                # в Filter, и строки юзера читаются все. На VARCHAR приведение
+                # безвредно — там оно no-op и планировщик его снимает сам.
+
                 # 1a. Update existing active connections (match by user_uuid + ip_address)
                 # Two-step approach: partitioned tables require partition key in
                 # unique index, so ON CONFLICT (user_uuid, ip_address) alone won't
@@ -235,7 +241,7 @@ class ConnectionsMixin:
                             AS t(u, u_ip, n, d, t)
                     ) batch
                     WHERE uc.user_uuid = batch.uid
-                      AND uc.ip_address::text = batch.ip::text
+                      AND uc.ip_address = batch.ip
                       AND uc.disconnected_at IS NULL
                     """,
                     user_uuids, ip_addresses, node_uuids, device_infos, connected_ats,
@@ -252,7 +258,7 @@ class ConnectionsMixin:
                     WHERE NOT EXISTS (
                         SELECT 1 FROM {USER_CONNECTIONS_TABLE} uc
                         WHERE uc.user_uuid = u::uuid
-                          AND uc.ip_address::text = u_ip::text
+                          AND uc.ip_address = u_ip{ip_cast}
                           AND uc.disconnected_at IS NULL
                     )
                     """,
@@ -272,7 +278,7 @@ class ConnectionsMixin:
                         FROM UNNEST($1::text[], $2::text[]) AS t(u, i)
                     ) batch
                     WHERE uc.user_uuid = batch.uid
-                      AND uc.ip_address::text != batch.ip::text
+                      AND uc.ip_address != batch.ip
                       AND uc.disconnected_at IS NULL
                       AND uc.connected_at < NOW() - make_interval(mins => $3)
                     """,
@@ -720,7 +726,7 @@ class ConnectionsMixin:
                         user_uuid, node_uuid, ip_address, destination,
                         inbound_tag, outbound_tag, detected_at, detected_by
                     )
-                    SELECT u, n, ip, dst, itag, otag, COALESCE(da, NOW()), db
+                    SELECT u::uuid, n::uuid, ip, dst, itag, otag, COALESCE(da, NOW()), db
                     FROM UNNEST(
                         $1::text[], $2::text[], $3::text[], $4::text[],
                         $5::text[], $6::text[], $7::timestamptz[], $8::text[]
@@ -733,6 +739,56 @@ class ConnectionsMixin:
         except Exception as e:
             logger.error("batch_save_torrent_events failed: %s", e)
             return 0
+
+    async def count_recent_torrent_events(self, user_uuid: str, minutes: int = 30) -> int:
+        """Сколько торрент-событий набралось у пользователя за окно.
+
+        По этому числу отделяют обмен от шума: у настоящего роя счёт идёт на
+        сотни за минуты, у ложного срабатывания событие ровно одно.
+        """
+        if not self.is_connected:
+            return 0
+        try:
+            async with self.acquire() as conn:
+                value = await conn.fetchval(
+                    "SELECT count(*) FROM torrent_events "
+                    "WHERE user_uuid = $1::uuid "
+                    "AND detected_at > NOW() - make_interval(mins => $2)",
+                    user_uuid, minutes,
+                )
+            return int(value or 0)
+        except Exception as e:
+            logger.warning("count_recent_torrent_events failed: %s", e)
+            return 0
+
+    async def shared_torrent_destinations(
+        self, destinations: list, hours: int = 24,
+    ) -> set:
+        """Адреса из списка, за которыми в окне стоял не один пользователь.
+
+        Вердикт nDPI живёт на адресе назначения: за адресом мессенджера или
+        CDN сидит пол-ноды, и один поток сделал бы нарушителями всех, кто
+        туда ходил. Обвинять по такому адресу нельзя — привязка недоказуема.
+        """
+        if not self.is_connected or not destinations:
+            return set()
+        try:
+            async with self.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT destination
+                    FROM torrent_events
+                    WHERE destination = ANY($1::text[])
+                      AND detected_at > NOW() - make_interval(hours => $2)
+                    GROUP BY destination
+                    HAVING count(DISTINCT user_uuid) > 1
+                    """,
+                    list({str(d) for d in destinations if d}), hours,
+                )
+            return {r["destination"] for r in rows}
+        except Exception as e:
+            logger.warning("shared_torrent_destinations failed: %s", e)
+            return set()
 
     async def get_recent_torrent_violation(self, user_uuid: str, minutes: int = 10):
         """Check if a torrent-type violation exists for this user within the last N minutes."""

@@ -44,6 +44,19 @@ MEANINGFUL_EVENTS = frozenset({"detected", "detection-update", "update", "guesse
 #: оказаться любой из половин.
 TORRENT_MARKERS = ("bittorrent", "torrent")
 
+#: Уверенность, которой верить нельзя: nDPI сам сообщает, что не разобрал
+#: поток, а угадал по номеру порта или по адресу. На нестандартных портах
+#: такая догадка и даёт ложные срабатывания.
+WEAK_CONFIDENCE = ("guessed", "match by port", "match by ip")
+
+#: Порты, на которых торрент-пиров не бывает. Ниже 1024 нужен root на той
+#: стороне, а 80/443/8443/5222 — это веб и мессенджеры. На проде весь
+#: остаточный шум nDPI пришёл именно сюда: 63 события, размазанных по двум
+#: десяткам человек, — против трёх тысяч событий у четверых на случайных
+#: высоких портах, где рой и живёт.
+IMPLAUSIBLE_PEER_PORTS = frozenset({80, 443, 8443, 5222})
+MIN_PEER_PORT = 1024
+
 
 def iter_messages(buffer: bytes) -> Tuple[Iterator[dict], bytes]:
     """Разобрать буфер на сообщения; вернуть (события, остаток).
@@ -87,12 +100,56 @@ def protocol_of(event: dict) -> str:
     return ""
 
 
+def confidence_of(event: dict) -> str:
+    """Чем nDPI обосновал вердикт: разбором потока или догадкой.
+
+    В сообщении это объект вида ``{"6": "DPI"}`` — ключ числовой код,
+    значение читаемое имя; берём имя.
+    """
+    ndpi = event.get("ndpi")
+    values = ndpi.get("confidence") if isinstance(ndpi, dict) else None
+    if isinstance(values, dict):
+        return str(next(iter(values.values()), "")).lower()
+    if isinstance(values, str):
+        return values.lower()
+    return ""
+
+
 def is_torrent(event: dict) -> bool:
-    """Вердикт про BitTorrent — по протоколу или категории обмена файлами."""
+    """Вердикт про настоящий обмен по BitTorrent.
+
+    Мало увидеть слово в имени протокола. У составного «master.app» сам
+    поток — это master, а app лишь то, к чему он относится: `DNS.BitTorrent`
+    означает спрошенное имя трекера, `TLS.BitTorrent` — соединение с ним по
+    HTTPS. Ни там, ни там обмена ещё не было, а прилетало за это нарушение
+    со скором сотня. Поэтому торрентом считаем только то, где BitTorrent и
+    есть сам протокол потока.
+
+    Догадкам без разбора потока тоже не верим — иначе за торрент сойдёт что
+    угодно на непонятном порту.
+    """
     if event.get("flow_event_name") not in MEANINGFUL_EVENTS:
         return False
-    proto = protocol_of(event).lower()
-    return any(marker in proto for marker in TORRENT_MARKERS)
+    master = protocol_of(event).lower().split(".", 1)[0]
+    if not any(marker in master for marker in TORRENT_MARKERS):
+        return False
+    if not peer_port_plausible(event):
+        return False
+    confidence = confidence_of(event)
+    return not any(weak in confidence for weak in WEAK_CONFIDENCE)
+
+
+def peer_port_plausible(event: dict) -> bool:
+    """Похож ли порт назначения на порт торрент-пира.
+
+    Неизвестный порт не повод отбрасывать вердикт: лучше лишнее событие,
+    чем пропущенный обмен.
+    """
+    try:
+        port = int(event.get("dst_port"))
+    except (TypeError, ValueError):
+        return True
+    return port >= MIN_PEER_PORT and port not in IMPLAUSIBLE_PEER_PORTS
 
 
 def destination_of(event: dict) -> Optional[str]:

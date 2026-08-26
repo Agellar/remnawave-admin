@@ -12,7 +12,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Header, Request
@@ -173,6 +173,19 @@ _NODE_NAME_TTL_MINUTES = 30
 _node_last_batch: dict[str, float] = {}
 MIN_BATCH_INTERVAL = 1.0  # seconds
 
+# Адреса собственной инфраструктуры: {ip}. Ноды заводят редко, пяти минут
+# кэша хватает, а разбирать событие дороже, чем держать это множество.
+_infra_ips_cache: tuple[float, frozenset[str]] = (0.0, frozenset())
+_INFRA_IPS_TTL = 300  # seconds
+
+# Порты, на которых слушает наша инфраструктура: ssh, веб-панель, selfsteal
+# и API ноды. Всё остальное на тех же адресах — обычный интернет.
+_INFRA_PORTS = frozenset({22, 80, 443, 2222, 8443})
+
+# За какое окно считаем накопленные торрент-события пользователя. Полчаса
+# ловят и короткую раздачу, и неспешную закачку, но не тянут вчерашний шум.
+_TORRENT_EVENT_WINDOW_MINUTES = 30
+
 
 async def _get_node_name(node_uuid: str) -> str:
     """Вернуть имя ноды по UUID (с кэшем и TTL). Fallback — первые 8 символов UUID."""
@@ -187,6 +200,55 @@ async def _get_node_name(node_uuid: str) -> str:
         return name
     except Exception:
         return cached[0] if cached else node_uuid[:8]
+
+async def _own_infrastructure_ips() -> frozenset[str]:
+    """Адреса наших же нод — панельный адрес и адрес, с которого стучится агент."""
+    global _infra_ips_cache
+    cached_at, ips = _infra_ips_cache
+    now = time.time()
+    if ips and now - cached_at < _INFRA_IPS_TTL:
+        return ips
+    try:
+        async with db_service.acquire() as conn:
+            rows = await conn.fetch(select_sql(NODES_TABLE, "address, agent_ip"))
+    except Exception as e:
+        logger.warning("Cannot read node addresses: %s", e)
+        return ips
+    fresh = {
+        str(value).strip()
+        for row in rows
+        for value in (row["address"], row["agent_ip"])
+        if value and str(value).strip()
+    }
+    _infra_ips_cache = (now, frozenset(fresh))
+    return _infra_ips_cache[1]
+
+
+def _split_destination(destination: str) -> tuple[str, Optional[int]]:
+    """Разобрать «host:port» — Xray пишет назначение одной строкой."""
+    value = (destination or "").strip()
+    if value.startswith("["):  # IPv6 в скобках
+        host, _, rest = value[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    elif value.count(":") == 1:
+        host, _, port = value.partition(":")
+    else:
+        host, port = value, ""
+    try:
+        return host, int(port)
+    except ValueError:
+        return host, None
+
+
+def _is_own_service(destination: str, infra_ips: frozenset) -> bool:
+    """Поток к нашему же серверу на его служебный порт.
+
+    Только на служебный: за нодой сидят наши же клиенты, и пир на
+    торрент-порту за ней — настоящий обмен, а не туннель между серверами.
+    """
+    host, port = _split_destination(destination)
+    return host in infra_ips and port in _INFRA_PORTS
+
 
 router = APIRouter()
 
@@ -625,9 +687,25 @@ async def receive_connections(
     if report.torrent_events:
         torrent_enabled = config_service.get("torrent_detection_enabled", True)
         if torrent_enabled:
+            # Поток к своему же серверу на его служебный порт — это туннель
+            # между нашими нодами: торрента внутри не видит никто, включая
+            # nDPI, он метит шифрованный поток по косвенным признакам. Такие
+            # события отбрасываем, не доводя ни до базы, ни до наказания.
+            infra_ips = await _own_infrastructure_ips()
+            torrent_events = [
+                event for event in report.torrent_events
+                if not _is_own_service(event.destination, infra_ips)
+            ]
+            ignored_infra = len(report.torrent_events) - len(torrent_events)
+            if ignored_infra:
+                logger.info(
+                    "Torrent events: %d to own infrastructure ignored (node=%s)",
+                    ignored_infra, node_name,
+                )
+
             # Resolve user UUIDs and build batch
             batch_events = []
-            for event in report.torrent_events:
+            for event in torrent_events:
                 try:
                     user_uuid_t = await _cached_find_user(event.user_email)
                     if not user_uuid_t:
@@ -653,7 +731,7 @@ async def receive_connections(
                     "Torrent events: node=%s count=%d", node_name, torrent_processed
                 )
                 _schedule_background_task(
-                    _process_torrent_violations(report.torrent_events, user_uuid_cache)
+                    _process_torrent_violations(torrent_events, user_uuid_cache)
                 )
 
     return JSONResponse(
@@ -671,6 +749,23 @@ async def _process_torrent_violations(
 ):
     """Background: create violations and send notifications for torrent events."""
     try:
+        # Вердикт nDPI висит на адресе назначения, а не на человеке. Если по
+        # тому же адресу события есть и у других — за ним стоит не один
+        # пользователь (мессенджер, CDN, публичный резолвер), и обвинять
+        # некого. Проверка тут, а не в агенте: на нодах он обновляется не в
+        # один день, а защита нужна всем сразу.
+        shared = await db_service.shared_torrent_destinations(
+            [event.destination for event in events]
+        )
+        if shared:
+            events = [event for event in events if event.destination not in shared]
+            logger.info(
+                "Torrent violations: %d destination(s) shared by several users, skipped",
+                len(shared),
+            )
+            if not events:
+                return
+
         # Group events by user
         events_by_user: dict[str, list[TorrentEventReport]] = {}
         for event in events:
@@ -679,6 +774,10 @@ async def _process_torrent_violations(
                 events_by_user.setdefault(user_uuid, []).append(event)
 
         auto_action = config_service.get("torrent_auto_action", "notify")
+        try:
+            min_events = int(config_service.get("torrent_min_events", 5) or 1)
+        except (TypeError, ValueError):
+            min_events = 5
 
         for user_uuid, user_events in events_by_user.items():
             try:
@@ -687,6 +786,21 @@ async def _process_torrent_violations(
                 if whitelisted and (excluded is None or "torrent" in excluded):
                     logger.debug("User %s is whitelisted for torrent, skipping", user_uuid)
                     continue
+
+                # Одиночное срабатывание — это шум: настоящий обмен даёт сотни
+                # событий за минуты. Считаем накопленное по базе, а не по
+                # батчу: рой приезжает кусками, и в отдельном куске событий
+                # может быть немного.
+                if min_events > 1:
+                    recent = await db_service.count_recent_torrent_events(
+                        user_uuid, minutes=_TORRENT_EVENT_WINDOW_MINUTES,
+                    )
+                    if recent < min_events:
+                        logger.info(
+                            "Torrent: %d event(s) for %s in %d min — below threshold %d",
+                            recent, user_uuid[:8], _TORRENT_EVENT_WINDOW_MINUTES, min_events,
+                        )
+                        continue
 
                 # Dedup: skip if torrent violation exists within last 10 min
                 existing = await db_service.get_recent_torrent_violation(user_uuid, minutes=10)
@@ -1124,6 +1238,39 @@ async def _handle_violation(
         })
 
         from shared.violation_detector import ViolationAction
+
+        # Детектор рекомендует разобраться вручную — можно вместо этого сразу
+        # урезать скорость. Мера обратимая и не выкидывает человека из сети,
+        # поэтому в отличие от автоблокировки её не страшно применять на
+        # среднем скоре; выключено по умолчанию, решает администратор.
+        if (
+            violation_score.recommended_action == ViolationAction.SOFT_BLOCK
+            and config_service.get("violation_auto_soft_throttle", False)
+        ):
+            try:
+                from shared.config_service import config_service as _cfg
+                from shared.throttle import apply_throttle
+
+                rate_kbit = int(_cfg.get("throttle_default_kbit", 1024) or 1024)
+                ok, err, moved = await apply_throttle(
+                    user_uuid=user_uuid,
+                    rate_kbit=rate_kbit,
+                    reason=f"Автоматически по скору {violation_score.total:.1f}",
+                    admin_username="auto",
+                )
+                if ok:
+                    logger.warning(
+                        "Auto-throttled user %s to %d kbit (score=%.1f)%s",
+                        user_uuid[:8], rate_kbit, violation_score.total,
+                        " + reserve squad" if moved else "",
+                    )
+                    from web.backend.core.throttle_sync import push_throttles
+                    await push_throttles()
+                else:
+                    logger.warning("Auto-throttle failed for %s: %s", user_uuid[:8], err)
+            except Exception as throttle_error:
+                logger.warning("Auto-throttle error for %s: %s", user_uuid[:8], throttle_error)
+
         if violation_score.recommended_action == ViolationAction.HARD_BLOCK:
             if config_service.get("violation_auto_hard_block", True):
                 from shared.api_client import api_client

@@ -167,17 +167,27 @@ The largest section: analyzers, thresholds, automatic actions and retention. Wha
 | **🔕 Torrent notification cooldown (min)** | `torrent_notification_cooldown_minutes` | `30` | Minimum interval between torrent notifications for the same user |
 
 
-### 📈 Traffic rate
+### 📈 Traffic usage
 
 | Setting | Key | Default | What it does |
 |---|---|---|---|
-| **📈 Traffic rate monitor** | `traffic_rate_enabled` | `false` | Tracks abnormally high traffic consumption over a period |
+| **📈 Traffic usage monitor** | `traffic_rate_enabled` | `false` | Tracks abnormally high traffic consumption over a period |
 | **📊 Threshold (GB per window)** | `traffic_rate_threshold_gb` | `10.0` | Notify when a user consumes more than this amount in the window |
 | **⏱️ Check window (min)** | `traffic_rate_window_minutes` | `60` | Time window for traffic accounting (default 60 = 1 hour) |
 | **🔁 Check interval (min)** | `traffic_rate_check_interval_minutes` | `5` | How often to check traffic consumption |
 | **🔕 Notification cooldown (min)** | `traffic_rate_cooldown_minutes` | `60` | Minimum interval between repeated notifications for the same user |
 | **⚡ Auto-action on breach** | `traffic_rate_auto_action` | `notify` | Action on excessive traffic: notify only or auto-block |
 | **🚫 Auto-block threshold (GB)** | `traffic_rate_auto_block_gb` | `50.0` | Auto-block when traffic in the window exceeds this value. Only takes effect when auto-action = block_user |
+
+
+### throttle
+
+| Setting | Key | Default | What it does |
+|---|---|---|---|
+| **Ограничение скорости** | `throttle_enabled` | `true` | Разрешить «мягкую блокировку» — резать скорость нарушителю вместо полного отключения. Требует агента 1.6.0+ на нодах |
+| **Скорость по умолчанию (кбит/с)** | `throttle_default_kbit` | `1024` | На сколько резать, если скорость не указана явно. 1024 — сайты и мессенджеры работают, видео и торренты нет: человек замечает, что интернет странный, и идёт разбираться, а не молча теряет доступ |
+| **Резервный сквад для нарушителей** | `throttle_squad_uuid` | empty | UUID внутреннего сквада, куда уводить наказанного вдобавок к урезанию скорости. Прежние сквады запоминаются и возвращаются при снятии. Пусто — сквады не трогать, только резать скорость |
+| **Урезать скорость автоматически** | `violation_auto_soft_throttle` | `false` | Резать скорость сразу, когда детектор рекомендует разобраться вручную (скор 65-80). Мера обратимая и не выкидывает человека из сети, но по умолчанию выключена: решение о наказании остаётся за администратором |
 
 
 ### 🔍 Violation detection pipeline

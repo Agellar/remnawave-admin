@@ -4,7 +4,9 @@
 приём батча (метрики/подключения/резолв идентификаторов), кулдаун-логику
 batch-пайплайна нарушений, /health и /stats.
 """
-from datetime import datetime, timedelta
+import gzip
+import json
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -705,3 +707,163 @@ class TestPublicIpForAgent:
         with patch.object(collector, "db_service", db):
             await collector._remember_agent_ip("node-1", None)
         db.acquire.assert_not_called()
+
+
+# ── Сжатые тела (агент 1.6.0+) ────────────────────────────────
+
+
+class TestGzipBody:
+    """POST /api/v2/collector/batch с Content-Encoding: gzip."""
+
+    @staticmethod
+    def _gzip_headers():
+        return {**AGENT_HEADERS, "Content-Type": "application/json", "Content-Encoding": "gzip"}
+
+    @pytest.mark.asyncio
+    async def test_gzipped_batch_processed_like_plain(self, anon_client):
+        """Сжатый батч доходит до обработчика в том же виде, что и обычный."""
+        db = make_db_mock()
+        body = gzip.compress(
+            json.dumps(make_batch(connections=[make_connection()])).encode("utf-8")
+        )
+        with patch.object(collector, "db_service", db), \
+             patch.object(collector, "get_node_by_token", AsyncMock(return_value=NODE_UUID)), \
+             patch.object(collector, "_enqueue_violation_users", MagicMock()):
+            resp = await anon_client.post(
+                "/api/v2/collector/batch", content=body, headers=self._gzip_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["processed"] == 1
+        db.batch_upsert_connections.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_malformed_gzip_rejected(self, anon_client):
+        """Тело, объявленное сжатым, но не сжатое, — явный 400, а не 500."""
+        resp = await anon_client.post(
+            "/api/v2/collector/batch", content=b"not actually gzip",
+            headers=self._gzip_headers(),
+        )
+        assert resp.status_code == 400
+        assert resp.json()["code"] == "BAD_ENCODING"
+
+    @pytest.mark.asyncio
+    async def test_decompression_bomb_rejected(self, anon_client):
+        """Маленькое сжатое тело с гигантской начинкой не должно разворачиваться."""
+        body = gzip.compress(b"\0" * (32 * 1024 * 1024))
+        assert len(body) < 1024 * 1024  # именно бомба: сжатое мало, распакованное огромно
+        resp = await anon_client.post(
+            "/api/v2/collector/batch", content=body, headers=self._gzip_headers(),
+        )
+        assert resp.status_code == 413
+        assert resp.json()["code"] == "BODY_TOO_LARGE"
+
+
+class TestOwnInfrastructureFilter:
+    """Отсев торрент-событий, которые указывают на наши же серверы."""
+
+    INFRA = frozenset({"31.56.229.54", "64.188.82.217"})
+
+    def test_service_port_on_own_node_is_dropped(self):
+        """8443 на своей ноде — панель, а не торрент."""
+        from web.backend.api.v2.collector import _is_own_service
+        assert _is_own_service("31.56.229.54:8443", self.INFRA)
+
+    def test_torrent_port_on_own_node_counts(self):
+        """За нодой сидят наши же клиенты: пир на 6881 — настоящий обмен."""
+        from web.backend.api.v2.collector import _is_own_service
+        assert not _is_own_service("64.188.82.217:6881", self.INFRA)
+
+    def test_foreign_address_counts(self):
+        from web.backend.api.v2.collector import _is_own_service
+        assert not _is_own_service("1.1.1.1:443", self.INFRA)
+
+    def test_split_ipv6_destination(self):
+        from web.backend.api.v2.collector import _split_destination
+        assert _split_destination("[2001:db8::1]:6881") == ("2001:db8::1", 6881)
+
+    def test_split_destination_without_port(self):
+        from web.backend.api.v2.collector import _split_destination
+        assert _split_destination("example.org") == ("example.org", None)
+
+
+class TestSharedDestinations:
+    """Адрес, за которым стоит не один пользователь, обвинять не даёт."""
+
+    @staticmethod
+    def _db(rows, failing=False):
+        from shared.db.connections import ConnectionsMixin
+
+        class _Db(ConnectionsMixin):
+            is_connected = True
+
+            def acquire(self):
+                conn = MagicMock()
+                conn.fetch = AsyncMock(
+                    side_effect=Exception("boom") if failing else None,
+                    return_value=rows,
+                )
+                ctx = MagicMock()
+                ctx.__aenter__ = AsyncMock(return_value=conn)
+                ctx.__aexit__ = AsyncMock(return_value=False)
+                return ctx
+
+        return _Db()
+
+    @pytest.mark.asyncio
+    async def test_returns_addresses_with_several_users(self):
+        db = self._db([{"destination": "57.144.105.33:443"}])
+        shared = await db.shared_torrent_destinations(
+            ["57.144.105.33:443", "198.51.100.9:6881"]
+        )
+        assert shared == {"57.144.105.33:443"}
+
+    @pytest.mark.asyncio
+    async def test_empty_input_does_not_query(self):
+        db = self._db([{"destination": "should not be asked"}])
+        assert await db.shared_torrent_destinations([]) == set()
+
+    @pytest.mark.asyncio
+    async def test_broken_query_accuses_nobody_extra(self):
+        """Упавший запрос не должен ни ломать разбор, ни глушить обвинения."""
+        db = self._db([], failing=True)
+        assert await db.shared_torrent_destinations(["1.2.3.4:6881"]) == set()
+
+
+class TestRecentTorrentEvents:
+    """Порог, отделяющий обмен от одиночного шума."""
+
+    @staticmethod
+    def _db(value, failing=False):
+        from shared.db.connections import ConnectionsMixin
+
+        class _Db(ConnectionsMixin):
+            is_connected = True
+
+            def acquire(self):
+                conn = MagicMock()
+                conn.fetchval = AsyncMock(
+                    side_effect=Exception("boom") if failing else None,
+                    return_value=value,
+                )
+                ctx = MagicMock()
+                ctx.__aenter__ = AsyncMock(return_value=conn)
+                ctx.__aexit__ = AsyncMock(return_value=False)
+                return ctx
+
+        return _Db()
+
+    @pytest.mark.asyncio
+    async def test_counts_events(self):
+        db = self._db(137)
+        assert await db.count_recent_torrent_events("aaa-111", minutes=30) == 137
+
+    @pytest.mark.asyncio
+    async def test_empty_window_is_zero(self):
+        db = self._db(None)
+        assert await db.count_recent_torrent_events("aaa-111") == 0
+
+    @pytest.mark.asyncio
+    async def test_broken_query_accuses_nobody(self):
+        """Сломанный запрос не должен заводить нарушение вслепую."""
+        db = self._db(0, failing=True)
+        assert await db.count_recent_torrent_events("aaa-111") == 0

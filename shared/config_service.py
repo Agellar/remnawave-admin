@@ -1132,6 +1132,16 @@ DEFAULT_CONFIG_DEFINITIONS: List[Dict[str, Any]] = [
         "sort_order": 41,
     },
     {
+        "key": "torrent_min_events",
+        "value_type": "int",
+        "category": "violations",
+        "subcategory": "torrent",
+        "display_name": "Порог событий для нарушения",
+        "description": "Сколько торрент-событий должно набраться у пользователя за полчаса, чтобы завести нарушение. Настоящий обмен даёт сотни событий за минуты — одиночные срабатывания это шум nDPI. 1 — заводить нарушение по первому же событию",
+        "default_value": "5",
+        "sort_order": 43,
+    },
+    {
         "key": "torrent_notification_cooldown_minutes",
         "value_type": "int",
         "category": "violations",
@@ -1142,13 +1152,17 @@ DEFAULT_CONFIG_DEFINITIONS: List[Dict[str, Any]] = [
         "sort_order": 42,
     },
 
-    # === TRAFFIC RATE MONITOR ===
+    # === TRAFFIC USAGE MONITOR ===
+    # Ключи остаются traffic_rate_* — они лежат в базе у всех установок,
+    # переименование ключа обнулило бы сохранённые значения. Меняется только
+    # то, что видит человек: монитор считает ОБЪЁМ за окно (гигабайты), а
+    # звался «скоростью» и обещал мегабиты.
     {
         "key": "traffic_rate_enabled",
         "value_type": "bool",
         "category": "violations",
         "subcategory": "traffic_rate",
-        "display_name": "Монитор скорости трафика",
+        "display_name": "Монитор расхода трафика",
         "description": "Отслеживание аномально высокого потребления трафика за период",
         "default_value": "false",
         "sort_order": 50,
@@ -1193,15 +1207,71 @@ DEFAULT_CONFIG_DEFINITIONS: List[Dict[str, Any]] = [
         "default_value": "60",
         "sort_order": 54,
     },
+    # === ОГРАНИЧЕНИЕ СКОРОСТИ (мягкая блокировка) ===
+    # Между «предупредить» и «отключить» не было ничего: soft_block значился
+    # ограничением скорости, которого проект не умел. Ограничение живёт на
+    # ноде правилами tc и вешается на адрес пользователя — конфиг Xray и
+    # принадлежность к сквадам не трогаются, поэтому снимается так же
+    # мгновенно, как ставится.
+    {
+        "key": "throttle_enabled",
+        "value_type": "bool",
+        "category": "violations",
+        "subcategory": "throttle",
+        "display_name": "Ограничение скорости",
+        "description": "Разрешить «мягкую блокировку» — резать скорость нарушителю вместо полного отключения. Требует агента 1.6.0+ на нодах",
+        "default_value": "true",
+        "sort_order": 60,
+    },
+    {
+        "key": "throttle_default_kbit",
+        "value_type": "int",
+        "category": "violations",
+        "subcategory": "throttle",
+        "display_name": "Скорость по умолчанию (кбит/с)",
+        "description": "На сколько резать, если скорость не указана явно. 1024 — сайты и мессенджеры работают, видео и торренты нет: человек замечает, что интернет странный, и идёт разбираться, а не молча теряет доступ",
+        "default_value": "1024",
+        "sort_order": 61,
+    },
+    {
+        "key": "throttle_default_hours",
+        "value_type": "int",
+        "category": "violations",
+        "subcategory": "throttle",
+        "display_name": "Срок ограничения по умолчанию (ч)",
+        "description": "Через сколько часов ограничение снимается само, если срок не указан явно. 0 — держать бессрочно, до ручного снятия. Срок дисциплинирует не хуже бессрочного наказания, а забытых наказанных после него не остаётся",
+        "default_value": "0",
+        "sort_order": 62,
+    },
+    {
+        "key": "violation_auto_soft_throttle",
+        "value_type": "bool",
+        "category": "violations",
+        "subcategory": "throttle",
+        "display_name": "Урезать скорость автоматически",
+        "description": "Резать скорость сразу, когда детектор рекомендует разобраться вручную (скор 65-80). Мера обратимая и не выкидывает человека из сети, но по умолчанию выключена: решение о наказании остаётся за администратором",
+        "default_value": "false",
+        "sort_order": 64,
+    },
+    {
+        "key": "throttle_squad_uuid",
+        "value_type": "string",
+        "category": "violations",
+        "subcategory": "throttle",
+        "display_name": "Резервный сквад для нарушителей",
+        "description": "UUID внутреннего сквада, куда уводить наказанного вдобавок к урезанию скорости. Прежние сквады запоминаются и возвращаются при снятии. Пусто — сквады не трогать, только резать скорость",
+        "default_value": "",
+        "sort_order": 63,
+    },
     {
         "key": "traffic_rate_auto_action",
         "value_type": "string",
         "category": "violations",
         "subcategory": "traffic_rate",
         "display_name": "Авто-действие при превышении",
-        "description": "Действие при чрезмерном потреблении трафика: только уведомление или автоблокировка",
+        "description": "Действие при чрезмерном потреблении трафика: только уведомление, урезать скорость или отключить совсем. throttle — «мягкая блокировка»: человек остаётся на связи и может прийти разбираться",
         "default_value": "notify",
-        "options": ["notify", "block_user"],
+        "options": ["notify", "throttle", "block_user"],
         "sort_order": 55,
     },
     {
