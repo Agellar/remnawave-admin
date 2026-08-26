@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "version": "4.6.2-agellar.1",
+  "built_at": "2026-08-26T10:16:33Z",
+  "source": {
+    "repository": "https://github.com/Agellar/remnawave-admin",
+    "branch": "plugins-agellar",
+    "candidate_commit": "0dc7b1c10332794d820c795e8a624065719ec311",
+    "upstream_release": "4.6.2",
+    "upstream_commit": "f43293ff5c60313bb85f774dff5961d19b67fd90"
+  },
+  "distribution": {
+    "scope": "production-host-local",
+    "registry_published": false,
+    "policy": "compose uses a unique sha256 alias; image ID and OCI source label must match this manifest"
+  },
+  "images": {
+    "bot": {
+      "version_tag": "agellar/remnawave-admin-bot:4.6.2-agellar.1",
+      "immutable_alias": "agellar/remnawave-admin-bot:sha256-08b680d020a03767ee553a955d137591f905280d80260d6ea0a8d83bdfb55b43",
+      "image_id": "sha256:08b680d020a03767ee553a955d137591f905280d80260d6ea0a8d83bdfb55b43",
+      "size_bytes": 824150811
+    },
+    "backend": {
+      "version_tag": "agellar/remnawave-admin-web-backend:4.6.2-agellar.1",
+      "immutable_alias": "agellar/remnawave-admin-web-backend:sha256-cfca937ec934b2c3f4e233242d63a43289309e15d4bf2234bdba15dc3f2e7c35",
+      "image_id": "sha256:cfca937ec934b2c3f4e233242d63a43289309e15d4bf2234bdba15dc3f2e7c35",
+      "size_bytes": 726808374
+    },
+    "frontend": {
+      "version_tag": "agellar/remnawave-admin-web-frontend:4.6.2-agellar.1",
+      "immutable_alias": "agellar/remnawave-admin-web-frontend:sha256-ed603809005d2f8e38e37968e25c497a350d4c0fe74c24490050e1e4d1509bb9",
+      "image_id": "sha256:ed603809005d2f8e38e37968e25c497a350d4c0fe74c24490050e1e4d1509bb9",
+      "size_bytes": 67531234
+    }
+  }
+}
