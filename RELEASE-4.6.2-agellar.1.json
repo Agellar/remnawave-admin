@@ -14,6 +14,72 @@
     "registry_published": false,
     "policy": "compose uses a unique sha256 alias; image ID and OCI source label must match this manifest"
   },
+  "compatibility": {
+    "migration": "0102",
+    "node_agent": {
+      "required_version": "1.7.3",
+      "official_image": "ghcr.io/case211/remnawave-admin-node-agent@sha256:1b74e53b9587be9fd3bddf2c0fed6a935fa3f92af666d32011de0f68bc345ed6",
+      "platform_manifests": {
+        "linux_amd64": "sha256:90929ca264961bf8b4d27680559edce83b6c6b4002b64c73911cfaec22efb974",
+        "linux_arm64": "sha256:c8499a72f018e246b37b44537095eb355b75a1a3c8327d9b9009d41e4e761145"
+      },
+      "rollout": {
+        "updated_and_verified": 6,
+        "deferred": 1,
+        "deferred_reason": "collector_connectivity_gate_failed",
+        "rollback_snapshot_per_updated_node": true
+      },
+      "operational_scripts": [
+        "scripts/node-agent-1.7.3-preflight.sh",
+        "scripts/update-node-agent-1.7.3.sh",
+        "scripts/node-agent-1.7.3-verify.sh",
+        "scripts/node-agent-collector-diagnostic.sh"
+      ]
+    }
+  },
+  "plugins": {
+    "smart_support": "1.4.4",
+    "retention_radar": "1.2.4",
+    "block_radar": "0.7.4",
+    "incident_center": "0.1.2",
+    "live_flow": "0.17.0+agellar.2"
+  },
+  "verification": {
+    "backend_and_plugin_tests": {"passed": 157, "failed": 0},
+    "node_agent_tests": {"passed": 44, "failed": 0},
+    "frontend_tests": {"passed": 347, "failed": 0},
+    "frontend_typecheck": true,
+    "frontend_production_build": true,
+    "production": {
+      "backend_health": true,
+      "frontend_origin": true,
+      "remnawave_tunnel_application_health": true,
+      "plugin_read_only_smoke": true,
+      "history_fresh": true,
+      "globalping_only_probe_cycle": true,
+      "campaign_smoke_dry_run": true,
+      "new_offers": 0,
+      "new_broadcasts": 0,
+      "new_send_rows": 0,
+      "active_throttles": 0
+    }
+  },
+  "backups": {
+    "pre_deploy": {
+      "path": "/root/remnawave-admin-backups/20260826T093541Z-pre-4.6.2",
+      "sha256_manifest": true,
+      "database_catalog": true,
+      "git_bundle": true,
+      "docker_archive": true
+    },
+    "post_deploy": {
+      "path": "/root/remnawave-admin-backups/20260826T110420Z-post-4.6.2",
+      "sha256_manifest": true,
+      "database_catalog": true,
+      "git_bundle": true,
+      "docker_archive": true
+    }
+  },
   "images": {
     "bot": {
       "version_tag": "agellar/remnawave-admin-bot:4.6.2-agellar.1",
