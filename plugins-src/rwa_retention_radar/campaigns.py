@@ -19,7 +19,7 @@ import hashlib
 import os
 import secrets
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Iterable
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -129,6 +129,26 @@ async def _incident_affected_users(db, safety: Dict[str, Any]) -> set[str]:
     return {str(row["user_uuid"]) for row in rows}
 
 
+async def _active_throttled_users(
+    db, user_uuids: Iterable[str]
+) -> set[str]:
+    """Resolve active soft-throttles without requiring migration 0102 yet."""
+    values = sorted({str(value) for value in user_uuids if value})
+    if not values:
+        return set()
+    exists = await db.fetchval("SELECT to_regclass($1)", "public.user_throttles")
+    if not exists:
+        return set()
+    rows = await db.fetch(
+        """SELECT user_uuid::text AS user_uuid
+             FROM user_throttles
+            WHERE user_uuid = ANY($1::uuid[])
+              AND (until IS NULL OR until > NOW())""",
+        values,
+    )
+    return {str(row["user_uuid"]) for row in rows}
+
+
 async def recipients(
     db,
     segment: str,
@@ -154,16 +174,23 @@ async def recipients(
 
     recent = await store.recently_messaged(db, cooldown_days)
     affected = await _incident_affected_users(db, safety or {}) if safety else set()
+    throttled = await _active_throttled_users(db, (user["uuid"] for user in everyone))
     skipped = {
         "no_telegram": 0,
         "cooldown": 0,
         "over_limit": 0,
         "bedolaga_auto": 0,
         "active_incident": 0,
+        "throttled": 0,
     }
 
     allowed: List[Dict[str, Any]] = []
     for user in everyone:
+        # An active throttle is an administrative measure. Marketing must not
+        # undermine it, whether this is a preview, dry-run, or live campaign.
+        if user["uuid"] in throttled:
+            skipped["throttled"] += 1
+            continue
         if not user.get("telegram_id"):
             skipped["no_telegram"] += 1
             continue
@@ -279,6 +306,8 @@ def _existing_result(row: Dict[str, Any]) -> Dict[str, Any]:
         "offer_errors": int(row["failed"] or 0),
         "broadcast_id": row["broadcast_id"],
         "status": row["status"],
+        # Historical rows predate the throttle exclusion counter.
+        "skipped_throttled": 0,
     }
 
 
@@ -307,7 +336,7 @@ async def send(
         if existing:
             return _existing_result(existing)
 
-    people, _ = await recipients(
+    people, skipped = await recipients(
         db,
         segment,
         th,
@@ -385,8 +414,10 @@ async def send(
             "dry_run": True,
             "recipients": len(people),
             "offers_created": 0,
+            "offer_errors": 0,
             "broadcast_id": None,
             "status": "dry_run",
+            "skipped_throttled": int(skipped.get("throttled", 0)),
         }
 
     # 1. Персональные скидки. Падение на одном человеке не должно ронять
@@ -448,4 +479,5 @@ async def send(
         "offer_errors": offer_errors,
         "broadcast_id": broadcast_id,
         "status": "sent",
+        "skipped_throttled": int(skipped.get("throttled", 0)),
     }

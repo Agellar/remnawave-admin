@@ -32,9 +32,15 @@ Plugins have two channels, **stable** and **dev**. Everyone is on stable by defa
 
 ## Existing plugins
 
-**Block Radar** watches where and when the online count drops and correlates that across panels: it shows that a block is not yours alone but affects a hoster or a route. The block / false-alarm buttons in the notification feed back into the detector.
+**Block Radar 0.7.4** watches where and when online drops. Soft-throttle compatibility requires Node Agent 1.7.3 or newer; old and unknown versions get a dedicated warning. A planned restart suppresses a new alert only when an explicit restart audit event exists. An invalid Sonnet response is stored as unavailable and never changes the deterministic incident.
 
-**Smart Support** diagnoses a user problem in one click: a report of the last day of connections, a hypothesis engine (subscription expired, node overloaded, client outdated), an outage check at the client ISP, and AI analysis on your own key — Gemini, Groq, OpenRouter or Claude. Plus a shared reference of client applications that panels maintain together.
+**Smart Support 1.4.4** diagnoses a user problem in one click. An active administrative rate throttle is shown read-only with its reason and expiry. The configured AI provider distinguishes a recommendation from an executed measure and does not suggest removing the throttle without authorization. Before the migration creates the table, this section is simply absent.
+
+**Retention Radar 1.2.4** runs retention campaigns with the existing server-side no-send guards. Users under an active administrative throttle are excluded from live delivery; dry-run reports a separate `skipped_throttled` count and still sends nothing.
+
+**Incident Center 0.1.2** is the shared infrastructure-event queue. It shows the Agent 1.7.3 rollout, explicit restart audit events, and aggregate `violation.throttle.add/remove` activity. A failed-squad-restore incident is created only from explicit `restore_failed` or `restore_required` evidence; `squads_restored=false` alone is not enough.
+
+The exact compatibility provenance is recorded in `plugins-src/PROVENANCE.md`.
 
 ## Removing
 

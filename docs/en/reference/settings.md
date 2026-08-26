@@ -184,10 +184,11 @@ The largest section: analyzers, thresholds, automatic actions and retention. Wha
 
 | Setting | Key | Default | What it does |
 |---|---|---|---|
-| **Ограничение скорости** | `throttle_enabled` | `true` | Разрешить «мягкую блокировку» — резать скорость нарушителю вместо полного отключения. Требует агента 1.6.0+ на нодах |
-| **Скорость по умолчанию (кбит/с)** | `throttle_default_kbit` | `1024` | На сколько резать, если скорость не указана явно. 1024 — сайты и мессенджеры работают, видео и торренты нет: человек замечает, что интернет странный, и идёт разбираться, а не молча теряет доступ |
-| **Резервный сквад для нарушителей** | `throttle_squad_uuid` | empty | UUID внутреннего сквада, куда уводить наказанного вдобавок к урезанию скорости. Прежние сквады запоминаются и возвращаются при снятии. Пусто — сквады не трогать, только резать скорость |
-| **Урезать скорость автоматически** | `violation_auto_soft_throttle` | `false` | Резать скорость сразу, когда детектор рекомендует разобраться вручную (скор 65-80). Мера обратимая и не выкидывает человека из сети, но по умолчанию выключена: решение о наказании остаётся за администратором |
+| **Speed throttling** | `throttle_enabled` | `true` | Allow a soft block by reducing a violator's speed instead of disconnecting them. Requires Node Agent 1.7.3+ |
+| **Default speed (kbit/s)** | `throttle_default_kbit` | `1024` | Rate used when no explicit speed is supplied. At 1024 kbit/s sites and messengers remain usable while video and torrents do not |
+| **Default duration (hours)** | `throttle_default_hours` | `0` | Number of hours before the throttle lifts automatically. 0 keeps it active until manual removal |
+| **Reserve squad for violators** | `throttle_squad_uuid` | empty | Optional internal squad used while throttled. Previous squads are remembered and restored on removal; empty leaves squad membership unchanged |
+| **Automatic soft throttle** | `violation_auto_soft_throttle` | `false` | Apply throttling when the detector recommends manual review (score 65–80). Disabled by default so the administrator retains the decision |
 
 
 ### 🔍 Violation detection pipeline

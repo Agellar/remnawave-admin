@@ -1,13 +1,21 @@
 """Regression tests for the self-hosted, local-only Block Radar."""
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from rwa_local_block_radar import ai, engine, qcode, settings, store
-from rwa_local_block_radar.api import _alert, _local_id, _probe_schedule
+from rwa_local_block_radar.api import (
+    _agent_compatibility,
+    _alert,
+    _local_id,
+    _probe_schedule,
+)
 from rwa_local_block_radar.plugin import manifest
 
 
@@ -64,7 +72,7 @@ def test_manifest_uses_builtin_block_radar_ui_without_license():
     item = manifest()
     assert item.id == "block_radar"
     assert item.billing == "free"
-    assert item.version == "0.7.3"
+    assert item.version == "0.7.4"
     assert "edit" in item.rbac_resources["block_radar"]
     assert item.navigation[0].path == "/plugins/block-radar"
     assert item.navigation[0].permission == ("block_radar", "view")
@@ -95,6 +103,8 @@ def test_schema_prevents_duplicate_open_incidents():
 def test_ai_schema_and_prompt_are_infrastructure_only():
     assert "local_block_radar_ai_analyses" in store.DDL
     assert "local_block_radar_ai_usage" in store.DDL
+    assert "attempted INTEGER" in store.DDL
+    assert "succeeded INTEGER" in store.DDL
     assert "user_uuid" not in store.DDL
     assert "telegram_id" not in store.DDL
     assert "likely_block" in ai.SYSTEM_PROMPT
@@ -120,6 +130,103 @@ def test_ai_is_pinned_to_sonnet_and_block_confidence_is_calibrated():
         }
     )
     assert result["confidence"] == 0.70
+
+
+def _analysis_payload(**updates):
+    result = {
+        "classification": "traffic_shift",
+        "confidence": 0.62,
+        "summary": "Остальная сеть выросла, нода доступна.",
+        "evidence": ["node_alive=true"],
+        "recommendations": ["Сравнить транспорт"],
+        "support_note": "Наблюдаем перераспределение нагрузки.",
+    }
+    result.update(updates)
+    return result
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        [{"type": "tool_use", "name": "record_radar_analysis", "input": _analysis_payload()}],
+        [{
+            "type": "tool_use",
+            "name": "record_radar_analysis",
+            "input": json.dumps(_analysis_payload(), ensure_ascii=False),
+        }],
+        [{
+            "type": "text",
+            "text": "relay prefix\n" + json.dumps(_analysis_payload(), ensure_ascii=False),
+        }],
+    ],
+)
+def test_ai_parser_accepts_tool_dict_tool_json_and_bounded_text(content):
+    result = ai._parse_response({"content": content})
+    assert result["classification"] == "traffic_shift"
+    assert result["availability"] == "available"
+
+
+@pytest.mark.parametrize(
+    ("response", "code"),
+    [
+        ({"stop_reason": "max_tokens", "content": []}, "max_tokens"),
+        ({"content": []}, "missing_tool"),
+        ({"stop_reason": "refusal", "content": []}, "refusal"),
+        ({"content": [{"type": "refusal"}]}, "refusal"),
+        ({
+            "content": [{
+                "type": "tool_use",
+                "name": "record_radar_analysis",
+                "input": _analysis_payload(summary=""),
+            }],
+        }, "empty_required"),
+    ],
+)
+def test_ai_parser_distinguishes_expected_contract_failures(response, code):
+    with pytest.raises(ai.AIContractError) as raised:
+        ai._parse_response(response)
+    assert raised.value.code == code
+
+
+def test_ai_text_fallback_is_size_bounded():
+    with pytest.raises(ai.AIContractError) as raised:
+        ai._parse_response({
+            "content": [{"type": "text", "text": "x" * (ai.MAX_JSON_FALLBACK_CHARS + 1)}]
+        })
+    assert raised.value.code == "text_fallback_too_large"
+
+
+def test_agent_compatibility_warns_below_173_and_on_unknown_versions():
+    result = _agent_compatibility([
+        {"name": "ready", "agent_version": "1.7.3"},
+        {"name": "old", "agent_version": "v1.7.2"},
+        {"name": "pending", "agent_version": None},
+    ])
+    assert result["minimum_version"] == "1.7.3"
+    assert result["compatible"] == 1
+    assert result["incompatible"] == [
+        {"node_name": "old", "agent_version": "v1.7.2"}
+    ]
+    assert result["unknown"] == ["pending"]
+    assert result["warning"] is True
+
+
+@pytest.mark.asyncio
+async def test_restart_suppression_uses_only_explicit_audit_events():
+    missing = AsyncMock()
+    missing.fetchval.return_value = None
+    assert await engine.recent_restart_nodes(missing, ["node-1"]) == set()
+    missing.fetch.assert_not_awaited()
+
+    db = AsyncMock()
+    db.fetchval.return_value = "admin_audit_log"
+    db.fetch.return_value = [{"resource_id": "node-1"}]
+    assert await engine.recent_restart_nodes(db, ["node-1", "node-2"]) == {"node-1"}
+    query, actions, nodes, minutes = db.fetch.await_args.args
+    assert "admin_audit_log" in query
+    assert actions == ["node.restart", "nodes.restart"]
+    assert nodes == ["node-1", "node-2"]
+    assert minutes == engine.RESTART_SUPPRESSION_MINUTES
 
 
 def test_alert_api_decodes_jsonb_ai_arrays():
@@ -245,6 +352,8 @@ async def test_ai_call_uses_sonnet_tool_and_sanitized_context(monkeypatch):
     }
     monkeypatch.setattr(store, "analysis_context", AsyncMock(return_value=context))
     monkeypatch.setattr(store, "reserve_ai_call", AsyncMock(return_value=1))
+    success = AsyncMock()
+    monkeypatch.setattr(store, "record_ai_success", success)
 
     async def saved(_db, **kwargs):
         result = kwargs["result"]
@@ -272,6 +381,109 @@ async def test_ai_call_uses_sonnet_tool_and_sanitized_context(monkeypatch):
     assert "user_uuid" not in serialized
     assert "telegram_id" not in serialized
     assert "Authorization" in captured["headers"]
+    success.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_repeated_contract_failure_retries_once_and_saves_unavailable(monkeypatch):
+    class FakeSettings:
+        async def get(self, key, default=None):
+            return default
+
+    responses = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"content": []}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def post(self, url, *, json, headers):
+            responses.append(json)
+            return Response()
+
+    monkeypatch.setattr(ai.httpx, "AsyncClient", lambda **_: Client())
+    monkeypatch.setattr(
+        ai,
+        "get_ai_provider",
+        AsyncMock(return_value={"provider": "qcode", "api_key": "secret"}),
+    )
+    monkeypatch.setattr(store, "analysis_for_alert", AsyncMock(return_value=None))
+    monkeypatch.setattr(store, "alert_by_id", AsyncMock(return_value={"id": 9}))
+    context = {"alert": {"node_name": "node-a"}, "network_latest": []}
+    monkeypatch.setattr(store, "analysis_context", AsyncMock(return_value=context))
+    reserve = AsyncMock(side_effect=[1, 2])
+    monkeypatch.setattr(store, "reserve_ai_call", reserve)
+    success = AsyncMock()
+    monkeypatch.setattr(store, "record_ai_success", success)
+
+    async def saved(_db, **kwargs):
+        now = datetime.now(timezone.utc)
+        return {
+            "id": 1,
+            "alert_id": kwargs["alert_id"],
+            **kwargs["result"],
+            "provider": kwargs["provider"],
+            "model": kwargs["model"],
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    monkeypatch.setattr(store, "save_analysis", saved)
+    logger = type("Logger", (), {"info": MagicMock(), "warning": MagicMock()})()
+    ctx = type(
+        "Ctx", (), {"settings": FakeSettings(), "db": object(), "logger": logger}
+    )()
+
+    result = await ai.analyze_alert(ctx, 9)
+
+    expected_hash = hashlib.sha256(
+        json.dumps(context, ensure_ascii=False, default=str, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    assert result["availability"] == "unavailable"
+    assert result["classification"] == "insufficient_data"
+    assert result["confidence"] == 0.0
+    assert len(responses) == 2
+    assert responses[0]["messages"][0] == responses[1]["messages"][0]
+    assert f"alert_id=9" in responses[1]["messages"][1]["content"]
+    assert expected_hash in responses[1]["messages"][1]["content"]
+    assert reserve.await_count == 2
+    success.assert_not_awaited()
+    assert logger.warning.call_args.kwargs["extra"]["reason"] == "missing_tool"
+    assert "exc_info" not in logger.warning.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_unavailable_ai_never_changes_deterministic_incident(monkeypatch):
+    unavailable = {
+        "availability": "unavailable",
+        "classification": "likely_block",
+        "confidence": 0.7,
+        "summary": "must not propagate",
+        "model": "claude-sonnet-4-6",
+    }
+    monkeypatch.setattr(store, "analysis_for_alert", AsyncMock(return_value=unavailable))
+    publish = AsyncMock(return_value=1)
+    monkeypatch.setattr(engine, "upsert_incident", publish)
+    ctx = type("Ctx", (), {"db": object()})()
+    row = {
+        "node_uuid": "00000000-0000-0000-0000-000000000009",
+        "node_name": "node-a",
+        "provider_name": "provider-a",
+        "online": 2,
+        "transport": "reality",
+    }
+    await engine._publish_incident(ctx, row, {"online": 20}, alert_id=9)
+    details = publish.await_args.kwargs["details"]
+    assert "ai_classification" not in details
+    assert details["drop_percent"] == 90
 
 
 @pytest.mark.asyncio

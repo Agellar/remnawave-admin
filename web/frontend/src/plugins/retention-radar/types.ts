@@ -86,6 +86,7 @@ export interface SkipReasons {
   cooldown: number
   over_limit: number
   active_incident: number
+  throttled: number
 }
 
 export interface CampaignArm {
@@ -129,6 +130,7 @@ export interface CampaignResult {
   offer_errors: number
   broadcast_id?: number | null
   status: string
+  skipped_throttled: number
 }
 
 export interface CampaignRecord {

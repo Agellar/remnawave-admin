@@ -76,13 +76,21 @@ def _build(ctx: PluginContext) -> PluginParts:
     async def analyze_in_background(alert_id: int) -> None:
         try:
             result = await ai.analyze_alert(ctx, alert_id)
-            ctx.logger.info(
-                "local_block_radar.ai_analysis_ready",
+            log = (
+                ctx.logger.info
+                if result.get("availability", "available") == "available"
+                else ctx.logger.warning
+            )
+            log(
+                "local_block_radar.ai_analysis_ready"
+                if result.get("availability", "available") == "available"
+                else "local_block_radar.ai_analysis_unavailable",
                 extra={
                     "alert_id": alert_id,
                     "classification": result["classification"],
                     "confidence": result["confidence"],
                     "model": result["model"],
+                    "availability": result.get("availability", "available"),
                 },
             )
         except Exception:

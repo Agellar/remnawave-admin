@@ -1219,7 +1219,7 @@ DEFAULT_CONFIG_DEFINITIONS: List[Dict[str, Any]] = [
         "category": "violations",
         "subcategory": "throttle",
         "display_name": "Ограничение скорости",
-        "description": "Разрешить «мягкую блокировку» — резать скорость нарушителю вместо полного отключения. Требует агента 1.6.0+ на нодах",
+        "description": "Разрешить «мягкую блокировку» — резать скорость нарушителю вместо полного отключения. Требует агента 1.7.3+ на нодах",
         "default_value": "true",
         "sort_order": 60,
     },

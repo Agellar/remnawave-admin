@@ -6,11 +6,13 @@ import { AlertTriangle, Check, Clock, ShieldAlert } from '@/components/brand/ico
 import {
   fetchFreshness,
   fetchIncidents,
+  fetchOperations,
   fetchQuality,
   reviewIncident,
   updateWorkflow,
 } from './api'
 import type { IncidentReviewLabel, IncidentWorkflowStatus } from './types'
+import type { OperationalContext } from './types'
 
 const WORKFLOW: IncidentWorkflowStatus[] = ['acknowledged', 'investigating', 'snoozed']
 const REVIEWS: IncidentReviewLabel[] = ['confirmed', 'false_positive', 'unclear']
@@ -35,6 +37,12 @@ export default function IncidentCenterPage() {
     queryKey: ['incident-center-quality'],
     queryFn: fetchQuality,
     retry: false,
+  })
+  const operations = useQuery({
+    queryKey: ['incident-center-operations'],
+    queryFn: fetchOperations,
+    retry: false,
+    refetchInterval: 60_000,
   })
   const workflow = useMutation({
     mutationFn: ({ id, status }: { id: number; status: IncidentWorkflowStatus }) =>
@@ -73,6 +81,8 @@ export default function IncidentCenterPage() {
         <FreshnessCard title={t('plugins.incident_center.history_source')} source={freshness.data?.history} />
         <FreshnessCard title={t('plugins.incident_center.radar_source')} source={freshness.data?.radar} />
       </div>
+
+      {operations.data && <OperationsCard data={operations.data} />}
 
       {quality.data && quality.data.length > 0 && (
         <div className="glass-card p-4">
@@ -129,6 +139,54 @@ export default function IncidentCenterPage() {
           </article>
         ))}
       </div>
+    </div>
+  )
+}
+
+function OperationsCard({ data }: { data: OperationalContext }) {
+  const { t } = useTranslation()
+  const rollout = data.agent_rollout
+  const audit = data.audit
+  return (
+    <div className="glass-card p-4 space-y-3">
+      <h2 className="text-xs font-semibold uppercase tracking-wider text-dark-200">
+        {t('plugins.incident_center.operations')}
+      </h2>
+      <div className="grid gap-3 text-xs md:grid-cols-3">
+        <div>
+          <div className="text-dark-400">{t('plugins.incident_center.agent_rollout')}</div>
+          <div className={rollout.complete ? 'mt-1 text-emerald-300' : 'mt-1 text-amber-300'}>
+            {t('plugins.incident_center.agent_compatible', {
+              compatible: rollout.compatible,
+              total: rollout.total,
+              version: rollout.minimum_version,
+            })}
+          </div>
+        </div>
+        <div>
+          <div className="text-dark-400">{t('plugins.incident_center.restart_context')}</div>
+          <div className="mt-1 text-white">
+            {t('plugins.incident_center.restart_count', {
+              count: audit.operator_restarts.length,
+              hours: audit.window_hours,
+            })}
+          </div>
+        </div>
+        <div>
+          <div className="text-dark-400">{t('plugins.incident_center.throttle_audit')}</div>
+          <div className="mt-1 text-white">
+            +{audit.throttle_added} / −{audit.throttle_removed}
+          </div>
+        </div>
+      </div>
+      {audit.restore_failures.length > 0 && (
+        <p className="rounded border border-red-500/30 bg-red-500/[0.08] p-2 text-xs text-red-200">
+          {t('plugins.incident_center.restore_failures', { count: audit.restore_failures.length })}
+        </p>
+      )}
+      <p className="text-[11px] text-dark-400">
+        {t('plugins.incident_center.operations_evidence')}
+      </p>
     </div>
   )
 }

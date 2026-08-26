@@ -42,6 +42,35 @@ export interface SystemFreshness {
   radar: FreshnessSource
 }
 
+export interface OperationalContext {
+  agent_rollout: {
+    source_state: 'available' | 'missing'
+    minimum_version: string
+    total: number
+    compatible: number
+    versions: Record<string, number>
+    outdated: Array<{ node_name: string; agent_version: string }>
+    unknown: string[]
+    complete: boolean
+  }
+  audit: {
+    source_state: 'available' | 'missing'
+    window_hours: number
+    throttle_added: number
+    throttle_removed: number
+    operator_restarts: Array<{
+      audit_event_id: number
+      node_name?: string | null
+      observed_at?: string | null
+    }>
+    restore_failures: Array<{
+      audit_event_id: number
+      observed_at?: string | null
+      evidence: Record<string, boolean>
+    }>
+  }
+}
+
 export interface QualityItem {
   source_plugin: string
   kind: string

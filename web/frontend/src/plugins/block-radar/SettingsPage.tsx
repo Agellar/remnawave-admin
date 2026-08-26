@@ -241,7 +241,7 @@ export default function SettingsPage() {
             {t('plugins.block_radar.settings.ai_title')}
           </h2>
         </div>
-        <div className="grid gap-3 sm:grid-cols-3 text-xs">
+        <div className="grid gap-3 sm:grid-cols-4 text-xs">
           <div>
             <div className="text-dark-400">{t('plugins.block_radar.settings.ai_model')}</div>
             <div className="text-white font-mono mt-1">{draft.ai_model}</div>
@@ -255,8 +255,12 @@ export default function SettingsPage() {
           <div>
             <div className="text-dark-400">{t('plugins.block_radar.settings.ai_usage')}</div>
             <div className="text-white font-mono mt-1">
-              {aiStatus.data?.used ?? 0} / {draft.ai_monthly_limit}
+              {aiStatus.data?.attempted ?? aiStatus.data?.used ?? 0} / {draft.ai_monthly_limit}
             </div>
+          </div>
+          <div>
+            <div className="text-dark-400">{t('plugins.block_radar.settings.ai_success')}</div>
+            <div className="text-white font-mono mt-1">{aiStatus.data?.succeeded ?? 0}</div>
           </div>
         </div>
         <div className="space-y-1.5 max-w-xs">

@@ -8,6 +8,7 @@ from . import settings as settings_mod, store
 
 MIN_BASELINE_HOURS = 5
 MIN_BASELINE_SAMPLES = 60
+RESTART_SUPPRESSION_MINUTES = 10
 
 
 def classify_transport(tag: str | None) -> str:
@@ -95,13 +96,45 @@ def _is_recovered(sample: dict, base: dict, cfg: dict) -> bool:
     )
 
 
+async def recent_restart_nodes(
+    db, node_uuids: list[str], minutes: int = RESTART_SUPPRESSION_MINUTES
+) -> set[str]:
+    """Return only nodes with an explicit successful restart audit event.
+
+    Both action spellings exist because the endpoint writes ``node.restart``
+    and the audit middleware writes ``nodes.restart``.  A missing legacy audit
+    table fails open for detection rather than guessing that maintenance exists.
+    """
+    values = sorted({str(value) for value in node_uuids if value})
+    if not values:
+        return set()
+    exists = await db.fetchval("SELECT to_regclass($1)", "public.admin_audit_log")
+    if not exists:
+        return set()
+    rows = await db.fetch(
+        """SELECT DISTINCT resource_id
+             FROM admin_audit_log
+            WHERE action = ANY($1::text[])
+              AND resource='nodes'
+              AND resource_id = ANY($2::text[])
+              AND created_at >= NOW() - make_interval(mins => $3)""",
+        ["node.restart", "nodes.restart"],
+        values,
+        max(1, int(minutes)),
+    )
+    return {str(row["resource_id"]) for row in rows if row["resource_id"]}
+
+
 async def run_tick(ctx, state: dict) -> None:
     cfg = await settings_mod.get(ctx.settings)
     rows = await current_nodes(ctx.db, int(cfg["online_window_minutes"]))
     await store.insert_samples(ctx.db, rows)
     await store.cleanup(ctx.db, int(cfg["dip_history_days"]))
+    restart_nodes = await recent_restart_nodes(
+        ctx.db, [str(row["node_uuid"]) for row in rows]
+    )
 
-    created = resolved = measured = 0
+    created = resolved = measured = restart_suppressed = 0
     new_alert_ids: list[int] = []
     for row in rows:
         base = await store.baseline(ctx.db, row["node_uuid"], int(cfg["dip_history_days"]))
@@ -129,6 +162,9 @@ async def run_tick(ctx, state: dict) -> None:
             continue
 
         if not cfg["dip_enabled"]:
+            continue
+        if str(row["node_uuid"]) in restart_nodes:
+            restart_suppressed += 1
             continue
         if not row["node_alive"] and not cfg["dip_notify_offline"]:
             continue
@@ -165,6 +201,7 @@ async def run_tick(ctx, state: dict) -> None:
         "alerts_resolved": resolved,
         "notified": 0 if not cfg["notify_enabled"] else created + resolved,
         "measured": measured,
+        "restart_suppressed": restart_suppressed,
     }
     state["new_alert_ids"] = new_alert_ids
 
@@ -184,7 +221,7 @@ async def _publish_incident(
         "baseline_online": round(baseline_online, 1),
         "drop_percent": drop_percent,
     }
-    if analysis:
+    if analysis and analysis.get("availability", "available") == "available":
         details["ai_classification"] = analysis["classification"]
         details["ai_confidence"] = round(float(analysis["confidence"]), 2)
         details["ai_summary"] = analysis["summary"]

@@ -18,6 +18,9 @@ from . import settings as settings_mod, store
 
 
 SONNET_MODEL = "claude-sonnet-4-6"
+MAX_JSON_FALLBACK_CHARS = 12_000
+MAX_JSON_STARTS = 24
+REPAIR_MAX_TOKENS = 2_048
 DEFAULT_BASE_URLS = {
     "anthropic": "https://api.anthropic.com",
     "qcode": "https://api.qcode.cc/api",
@@ -98,6 +101,15 @@ class AIError(Exception):
     pass
 
 
+class AIContractError(AIError):
+    """An expected, non-transport model contract failure."""
+
+    def __init__(self, code: str, *, field: str | None = None):
+        super().__init__(code)
+        self.code = code
+        self.field = field
+
+
 def _public(row: dict) -> dict:
     def array(value: Any) -> list[str]:
         if isinstance(value, str):
@@ -118,6 +130,7 @@ def _public(row: dict) -> dict:
         "support_note": row.get("support_note"),
         "provider": row["provider"],
         "model": row["model"],
+        "availability": row.get("availability", "available"),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -130,19 +143,34 @@ def _clean_list(value: Any, *, limit: int = 6, chars: int = 300) -> list[str]:
 
 
 def _validate(value: dict[str, Any]) -> dict[str, Any]:
-    classification = str(value.get("classification") or "")
+    if not isinstance(value, dict):
+        raise AIContractError("invalid_required", field="root")
+    required = (
+        "classification", "confidence", "summary", "evidence",
+        "recommendations", "support_note",
+    )
+    missing = [name for name in required if name not in value or value[name] is None]
+    for name in ("classification", "summary"):
+        if name in value and not str(value.get(name) or "").strip():
+            missing.append(name)
+    if missing:
+        raise AIContractError("empty_required", field=",".join(sorted(set(missing))))
+
+    classification = str(value["classification"]).strip()
     if classification not in CLASSIFICATIONS:
-        classification = "insufficient_data"
+        raise AIContractError("invalid_required", field="classification")
     try:
-        confidence = max(0.0, min(1.0, float(value.get("confidence", 0.0))))
+        confidence = max(0.0, min(1.0, float(value["confidence"])))
     except (TypeError, ValueError):
-        confidence = 0.0
+        raise AIContractError("invalid_required", field="confidence") from None
+    if not isinstance(value["evidence"], list):
+        raise AIContractError("invalid_required", field="evidence")
+    if not isinstance(value["recommendations"], list):
+        raise AIContractError("invalid_required", field="recommendations")
     # A single local panel cannot justify high-confidence blocking attribution.
     if classification == "likely_block":
         confidence = min(confidence, 0.70)
-    summary = str(value.get("summary") or "").strip()[:700]
-    if not summary:
-        raise AIError("empty_summary")
+    summary = str(value["summary"]).strip()[:700]
     return {
         "classification": classification,
         "confidence": confidence,
@@ -150,7 +178,123 @@ def _validate(value: dict[str, Any]) -> dict[str, Any]:
         "evidence": _clean_list(value.get("evidence")),
         "recommendations": _clean_list(value.get("recommendations")),
         "support_note": str(value.get("support_note") or "").strip()[:500] or None,
+        "availability": "available",
     }
+
+
+def _bounded_json_object(raw: str) -> dict[str, Any] | None:
+    """Parse one JSON object while bounding text size and scan work."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    if len(raw) > MAX_JSON_FALLBACK_CHARS:
+        raise AIContractError("json_text_too_large")
+    text = raw.strip()
+    if text.startswith("```") and text.endswith("```"):
+        first_newline = text.find("\n")
+        if first_newline >= 0:
+            text = text[first_newline + 1:-3].strip()
+    try:
+        value = json.loads(text)
+        return value if isinstance(value, dict) else None
+    except ValueError:
+        pass
+
+    decoder = json.JSONDecoder()
+    starts = 0
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        starts += 1
+        if starts > MAX_JSON_STARTS:
+            break
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _parse_response(data: dict[str, Any]) -> dict[str, Any]:
+    """Accept the production response shapes without weakening the schema."""
+    if not isinstance(data, dict):
+        raise AIContractError("invalid_response")
+    blocks = data.get("content") or []
+    if data.get("stop_reason") == "refusal" or any(
+        isinstance(block, dict) and block.get("type") == "refusal"
+        for block in blocks
+    ):
+        raise AIContractError("refusal")
+    if data.get("stop_reason") == "max_tokens":
+        raise AIContractError("max_tokens")
+
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "tool_use" or block.get("name") != ANALYSIS_TOOL["name"]:
+            continue
+        tool_input = block.get("input")
+        if isinstance(tool_input, dict):
+            return _validate(tool_input)
+        if isinstance(tool_input, str):
+            parsed = _bounded_json_object(tool_input)
+            if parsed is None:
+                raise AIContractError("tool_input_bad_json")
+            return _validate(parsed)
+        raise AIContractError("tool_input_invalid")
+
+    # Some relays strip tool blocks but preserve the JSON as text.  Read only a
+    # bounded amount and still run the exact same required-field validation.
+    text_parts: list[str] = []
+    size = 0
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        part = block.get("text")
+        if not isinstance(part, str):
+            continue
+        size += len(part)
+        if size > MAX_JSON_FALLBACK_CHARS:
+            raise AIContractError("text_fallback_too_large")
+        text_parts.append(part)
+    if text_parts:
+        parsed = _bounded_json_object("\n".join(text_parts))
+        if parsed is not None:
+            return _validate(parsed)
+    raise AIContractError("missing_tool")
+
+
+def _unavailable_result() -> dict[str, Any]:
+    return {
+        "classification": "insufficient_data",
+        "confidence": 0.0,
+        "summary": "ИИ-анализ недоступен: ответ модели не прошёл проверку контракта.",
+        "evidence": [],
+        "recommendations": [],
+        "support_note": None,
+        "availability": "unavailable",
+    }
+
+
+def _contract_log(
+    ctx, event: str, *, error: AIContractError, alert_id: int,
+    input_hash: str, attempt: int,
+) -> None:
+    logger = getattr(ctx, "logger", None)
+    if logger is None:
+        return
+    log = logger.info if event.endswith("retry") else logger.warning
+    log(
+        event,
+        extra={
+            "alert_id": int(alert_id),
+            "input_hash": input_hash,
+            "attempt": int(attempt),
+            "reason": error.code,
+            "field": error.field,
+        },
+    )
 
 
 async def provider_status(settings, db) -> dict:
@@ -158,13 +302,18 @@ async def provider_status(settings, db) -> dict:
     shared = await get_ai_provider(settings)
     provider = str(shared.get("provider") or "").lower().replace("-", "_")
     period = datetime.now(timezone.utc).strftime("%Y-%m")
+    usage = await store.ai_usage_counts(db, period)
     return {
         "enabled": bool(radar_cfg["ai_enabled"]),
         "auto_analyze": bool(radar_cfg["ai_auto_analyze"]),
         "configured": bool(shared.get("api_key")) and provider in ALLOWED_PROVIDERS,
         "provider": provider or None,
         "model": radar_cfg["ai_model"],
-        "used": await store.ai_usage(db, period),
+        # ``used`` stays as the backwards-compatible quota field.  Attempts
+        # consume quota; successful validated analyses are reported separately.
+        "used": usage["attempted"],
+        "attempted": usage["attempted"],
+        "succeeded": usage["succeeded"],
         "monthly_limit": int(radar_cfg["ai_monthly_limit"]),
     }
 
@@ -199,11 +348,6 @@ async def analyze_alert(ctx, alert_id: int, *, force: bool = False) -> dict:
     payload = json.dumps(context, ensure_ascii=False, default=str, sort_keys=True)
     input_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     period = datetime.now(timezone.utc).strftime("%Y-%m")
-    used = await store.reserve_ai_call(
-        ctx.db, period=period, limit=int(radar_cfg["ai_monthly_limit"])
-    )
-    if used is None:
-        raise AIError("monthly_limit_reached")
 
     body = {
         "model": model,
@@ -228,29 +372,76 @@ async def analyze_alert(ctx, alert_id: int, *, force: bool = False) -> dict:
     kwargs: dict[str, Any] = {"timeout": httpx.Timeout(60.0)}
     if shared.get("proxy"):
         kwargs["proxy"] = shared["proxy"]
+    result: dict[str, Any] | None = None
+    contract_error: AIContractError | None = None
     async with httpx.AsyncClient(**kwargs) as http:
-        response = await http.post(f"{base_url}/v1/messages", json=body, headers=headers)
-    if response.status_code >= 400:
-        raise AIError(f"http_{response.status_code}")
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise AIError("non_json_response") from exc
-    if data.get("stop_reason") == "refusal":
-        raise AIError("refused")
-    tool_input = next(
-        (
-            block.get("input")
-            for block in (data.get("content") or [])
-            if block.get("type") == "tool_use"
-            and block.get("name") == ANALYSIS_TOOL["name"]
-            and isinstance(block.get("input"), dict)
-        ),
-        None,
-    )
-    if tool_input is None:
-        raise AIError("tool_result_missing")
-    result = _validate(tool_input)
+        for attempt in (1, 2):
+            reserved = await store.reserve_ai_call(
+                ctx.db, period=period, limit=int(radar_cfg["ai_monthly_limit"])
+            )
+            if reserved is None:
+                if attempt == 1:
+                    raise AIError("monthly_limit_reached")
+                contract_error = AIContractError("repair_quota_exhausted")
+                break
+
+            request_body = body
+            if attempt == 2:
+                request_body = {
+                    **body,
+                    "max_tokens": REPAIR_MAX_TOKENS,
+                    "messages": [
+                        *body["messages"],
+                        {
+                            "role": "user",
+                            "content": (
+                                "Исправь только формат ответа и снова вызови инструмент. "
+                                f"Не меняй исходный инцидент. alert_id={alert_id}; "
+                                f"input_hash={input_hash}."
+                            ),
+                        },
+                    ],
+                }
+
+            response = await http.post(
+                f"{base_url}/v1/messages", json=request_body, headers=headers
+            )
+            if response.status_code >= 400:
+                raise AIError(f"http_{response.status_code}")
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise AIError("non_json_response") from exc
+            try:
+                result = _parse_response(data)
+                contract_error = None
+                break
+            except AIContractError as exc:
+                contract_error = exc
+                if attempt == 1 and exc.code != "refusal":
+                    _contract_log(
+                        ctx,
+                        "local_block_radar.ai_contract_retry",
+                        error=exc,
+                        alert_id=alert_id,
+                        input_hash=input_hash,
+                        attempt=attempt,
+                    )
+                    continue
+                break
+
+    if result is None:
+        error = contract_error or AIContractError("contract_unknown")
+        _contract_log(
+            ctx,
+            "local_block_radar.ai_contract_unavailable",
+            error=error,
+            alert_id=alert_id,
+            input_hash=input_hash,
+            attempt=2 if error.code != "refusal" else 1,
+        )
+        result = _unavailable_result()
+
     saved = await store.save_analysis(
         ctx.db,
         alert_id=alert_id,
@@ -259,4 +450,6 @@ async def analyze_alert(ctx, alert_id: int, *, force: bool = False) -> dict:
         model=model,
         input_hash=input_hash,
     )
+    if result["availability"] == "available":
+        await store.record_ai_success(ctx.db, period=period)
     return _public(saved)

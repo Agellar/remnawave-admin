@@ -138,7 +138,17 @@ export interface ViolationCard {
   confidence?: number | null
   reason?: string | null
   action?: string | null
+  recommended_action?: string | null
+  action_taken?: string | null
   is_resolved: boolean
+}
+
+export interface ThrottleCard {
+  active: boolean
+  rate_kbit: number
+  reason?: string | null
+  created_at?: string | null
+  until?: string | null
 }
 
 export interface IncidentCard {
@@ -189,6 +199,7 @@ export interface ReportResponse {
   history_24h: HistorySection
   client: ClientSection
   nodes: NodeCard[]
+  throttle?: ThrottleCard | null
   correlations: CorrelationCluster[]
   violations_recent: ViolationCard[]
   incidents_active: IncidentCard[]

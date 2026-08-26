@@ -4,13 +4,13 @@ from __future__ import annotations
 from web.backend.core.plugin_api import PluginContext
 from web.backend.core.plugins import NavEntry, PluginManifest, PluginParts, ScheduledTask
 
-from . import __version__, store
+from . import __version__, operations, store
 from .api import RBAC_RESOURCES, build_router
 
 
 def _build(ctx: PluginContext) -> PluginParts:
     async def ensure() -> None:
-        await store.ensure_schema(ctx.db)
+        await operations.reconcile_restore_failures(ctx.db)
 
     return PluginParts(
         router=build_router(ctx),

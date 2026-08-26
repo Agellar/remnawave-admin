@@ -57,17 +57,26 @@ CREATE TABLE IF NOT EXISTS local_block_radar_ai_analyses (
     provider TEXT NOT NULL,
     model TEXT NOT NULL,
     input_hash TEXT NOT NULL,
+    availability TEXT NOT NULL DEFAULT 'available',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (alert_id)
 );
+ALTER TABLE local_block_radar_ai_analyses
+    ADD COLUMN IF NOT EXISTS availability TEXT NOT NULL DEFAULT 'available';
 CREATE INDEX IF NOT EXISTS local_block_radar_ai_updated_idx
     ON local_block_radar_ai_analyses (updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS local_block_radar_ai_usage (
     period TEXT PRIMARY KEY,
-    used INTEGER NOT NULL DEFAULT 0
+    used INTEGER NOT NULL DEFAULT 0,
+    attempted INTEGER NOT NULL DEFAULT 0,
+    succeeded INTEGER NOT NULL DEFAULT 0
 );
+ALTER TABLE local_block_radar_ai_usage
+    ADD COLUMN IF NOT EXISTS attempted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE local_block_radar_ai_usage
+    ADD COLUMN IF NOT EXISTS succeeded INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS local_block_radar_probe_cycles (
     id BIGSERIAL PRIMARY KEY,
@@ -346,11 +355,16 @@ async def analysis_context(db, alert: dict, *, sample_limit: int = 12) -> dict:
 
 async def reserve_ai_call(db, *, period: str, limit: int) -> int | None:
     value = await db.fetchval(
-        """INSERT INTO local_block_radar_ai_usage (period, used) VALUES ($1, 1)
+        """INSERT INTO local_block_radar_ai_usage
+                   (period, used, attempted, succeeded) VALUES ($1, 1, 1, 0)
            ON CONFLICT (period) DO UPDATE
-             SET used=local_block_radar_ai_usage.used+1
-           WHERE local_block_radar_ai_usage.used < $2
-           RETURNING used""",
+             SET used=GREATEST(local_block_radar_ai_usage.used,
+                               local_block_radar_ai_usage.attempted)+1,
+                 attempted=GREATEST(local_block_radar_ai_usage.used,
+                                    local_block_radar_ai_usage.attempted)+1
+           WHERE GREATEST(local_block_radar_ai_usage.used,
+                          local_block_radar_ai_usage.attempted) < $2
+           RETURNING attempted""",
         period, int(limit),
     )
     return int(value) if value is not None else None
@@ -365,6 +379,28 @@ async def ai_usage(db, period: str) -> int:
     )
 
 
+async def ai_usage_counts(db, period: str) -> dict[str, int]:
+    row = await db.fetchrow(
+        """SELECT GREATEST(used, attempted)::int AS attempted,
+                  succeeded::int AS succeeded
+             FROM local_block_radar_ai_usage WHERE period=$1""",
+        period,
+    )
+    return {
+        "attempted": int(row["attempted"] or 0) if row else 0,
+        "succeeded": int(row["succeeded"] or 0) if row else 0,
+    }
+
+
+async def record_ai_success(db, *, period: str) -> None:
+    await db.execute(
+        """UPDATE local_block_radar_ai_usage
+              SET succeeded=succeeded+1
+            WHERE period=$1""",
+        period,
+    )
+
+
 async def save_analysis(
     db, *, alert_id: int, result: dict, provider: str, model: str, input_hash: str
 ) -> dict:
@@ -372,9 +408,10 @@ async def save_analysis(
 
     row = await db.fetchrow(
         """INSERT INTO local_block_radar_ai_analyses
-                  (alert_id, classification, confidence, summary, evidence,
-                   recommendations, support_note, provider, model, input_hash)
-           VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10)
+                   (alert_id, classification, confidence, summary, evidence,
+                    recommendations, support_note, provider, model, input_hash,
+                    availability)
+           VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10,$11)
            ON CONFLICT (alert_id) DO UPDATE SET
                classification=EXCLUDED.classification,
                confidence=EXCLUDED.confidence,
@@ -385,11 +422,13 @@ async def save_analysis(
                provider=EXCLUDED.provider,
                model=EXCLUDED.model,
                input_hash=EXCLUDED.input_hash,
+               availability=EXCLUDED.availability,
                updated_at=NOW()
            RETURNING *""",
         int(alert_id), result["classification"], float(result["confidence"]),
         result["summary"], json.dumps(result["evidence"], ensure_ascii=False),
         json.dumps(result["recommendations"], ensure_ascii=False),
         result.get("support_note"), provider, model, input_hash,
+        result.get("availability", "available"),
     )
     return dict(row)

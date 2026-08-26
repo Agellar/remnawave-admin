@@ -87,8 +87,12 @@ export default function CampaignPage() {
     onSuccess: (res) => {
       setArmed(null)
       if (res.dry_run) {
-        setResult(t('plugins.retention_radar.campaign.dry_run_done', { n: res.recipients }))
-        toast.success(t('plugins.retention_radar.campaign.dry_run_done', { n: res.recipients }))
+        const dryRunMessage = t('plugins.retention_radar.campaign.dry_run_done', {
+          n: res.recipients,
+          throttled: res.skipped_throttled,
+        })
+        setResult(dryRunMessage)
+        toast.success(dryRunMessage)
       } else {
         setResult(
           t('plugins.retention_radar.campaign.sent_done', {
@@ -118,7 +122,8 @@ export default function CampaignPage() {
 
   const skipped = data.skipped
   const skippedTotal =
-    skipped.no_telegram + skipped.cooldown + skipped.over_limit + skipped.active_incident
+    skipped.no_telegram + skipped.cooldown + skipped.over_limit + skipped.active_incident +
+    skipped.bedolaga_auto + skipped.throttled
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -168,6 +173,9 @@ export default function CampaignPage() {
                 defaultValue: `Активный инфраструктурный инцидент: ${skipped.active_incident}`,
               })}
             </p>
+          )}
+          {skipped.throttled > 0 && (
+            <p>{t('plugins.retention_radar.campaign.skip_throttled', { n: skipped.throttled })}</p>
           )}
           {skipped.over_limit > 0 && (
             <p>{t('plugins.retention_radar.campaign.skip_limit', { n: skipped.over_limit })}</p>

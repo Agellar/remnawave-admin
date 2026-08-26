@@ -1,11 +1,11 @@
 # Live Flow safe fork provenance
 
 - Upstream: `https://github.com/chudo-arky/rwa-plugin-live-flow`
-- Audited release: `v0.16.0`
-- Audited upstream `main`: `a0962f623afcacd4c7cd96b472ec8eae76885e76`
-- Release tag target: `b84c68e7553db965668deb21386457cf3b88ae5a`
-- Upstream wheel SHA-256: `4196ba13f2fac4bf76411d6357c4b35c56898630b2004b1fc862985b11111dc3`
-- Vendored on: `2026-08-22`
+- Audited release: `v0.17.0`
+- Audited upstream `main`: `c84cadde9aa2f31e70ebbd32bc1ebb0ba3d18b49`
+- Release tag target: `c84cadde9aa2f31e70ebbd32bc1ebb0ba3d18b49`
+- Upstream wheel SHA-256: `805aaba053b9b5aa9ad42070ab731b54bf2472d3eab9f8373bf453c4934a6dfb`
+- Vendored on: `2026-08-26`
 
 The executable Python sources in the release wheel, tag target, and audited
 `main` commit were byte-for-byte equivalent after line-ending normalisation.
@@ -14,7 +14,7 @@ been force-moved during release preparation, and no GitHub artifact attestation
 was published.  This directory is the pinned, reviewable source used by our
 deployment.
 
-Local hardening relative to upstream 0.16.0:
+Local hardening relative to upstream 0.17.0:
 
 - fail-closed node access-policy and visible-user filtering;
 - superadmin/legacy-admin compatibility without weakening regular roles;
@@ -23,5 +23,11 @@ Local hardening relative to upstream 0.16.0:
   truncation state;
 - per-admin burst limiting;
 - non-overlapping, visibility-aware browser polling with cancellation;
+- server-side paging retained for personal-data panels while the upstream
+  0.17 large-fleet layout, filters, zoom, and page controls are used;
+- SVG DOM replacement is skipped for unchanged data and only visible flow
+  lines animate; listeners and animation frames are removed on unmount;
+- toolbar and personal-data pagers use separate styles, with explicit keyboard
+  focus, labels, and themed scrollbars;
 - single-flight profile/classification caches;
 - focused security and compatibility tests in `tests/test_security.py`.

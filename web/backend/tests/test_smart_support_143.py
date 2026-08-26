@@ -1,4 +1,4 @@
-"""Focused compatibility and false-positive guards for Smart Support 1.4.3."""
+"""Focused compatibility and false-positive guards for Smart Support 1.4.x."""
 from __future__ import annotations
 
 import sys
@@ -600,3 +600,66 @@ async def test_annulled_violations_do_not_enter_smart_support_context():
     db.fetch.return_value = []
     await data.violations_section(db, "00000000-0000-0000-0000-000000000001")
     assert "action_taken IS DISTINCT FROM 'annulled'" in db.fetch.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_active_throttle_is_read_only_and_safe_before_migration():
+    db = AsyncMock()
+    db.fetchval.return_value = None
+
+    assert await data.throttle_section(db, "00000000-0000-0000-0000-000000000001") is None
+    db.fetchrow.assert_not_awaited()
+
+    now = datetime.now(timezone.utc)
+    db.fetchval.return_value = "user_throttles"
+    db.fetchrow.return_value = {
+        "rate_kbit": 1024,
+        "reason": "operator decision",
+        "created_at": now,
+        "until": None,
+    }
+    result = await data.throttle_section(
+        db, "00000000-0000-0000-0000-000000000001"
+    )
+
+    assert result == {
+        "active": True,
+        "rate_kbit": 1024,
+        "reason": "operator decision",
+        "created_at": now,
+        "until": None,
+    }
+    assert "until IS NULL OR until > NOW()" in db.fetchrow.await_args.args[0]
+
+
+def test_ai_context_treats_throttle_as_executed_administrative_measure():
+    context = ai.build_context(
+        {
+            "user": {"status": "ACTIVE", "traffic": {}, "hwid_devices": []},
+            "history_24h": {"timeline": []},
+            "client": {},
+            "throttle": {
+                "active": True,
+                "rate_kbit": 512,
+                "reason": "manual review",
+                "until": "2026-08-27T00:00:00+00:00",
+            },
+            "violations_recent": [
+                {
+                    "score": 72,
+                    "recommended_action": "throttle",
+                    "action_taken": None,
+                }
+            ],
+            "hypotheses": [],
+        }
+    )
+
+    assert context["administrative_throttle"]["rate_kbit"] == 512
+    assert context["violations_recent"][0] == {
+        "score": 72,
+        "recommended_action": "throttle",
+        "action_taken": None,
+    }
+    assert "самовольно снять" in ai.SYSTEM_PROMPT_TEMPLATE
+    assert "recommended_action" in ai.SYSTEM_PROMPT_TEMPLATE

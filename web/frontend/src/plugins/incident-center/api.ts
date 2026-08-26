@@ -5,6 +5,7 @@ import type {
   IncidentReviewLabel,
   IncidentWorkflowStatus,
   QualityItem,
+  OperationalContext,
   SystemFreshness,
 } from './types'
 
@@ -25,6 +26,11 @@ export async function fetchFreshness(): Promise<SystemFreshness> {
 export async function fetchQuality(): Promise<QualityItem[]> {
   const { data } = await client.get<{ items: QualityItem[] }>(`${BASE}/quality`)
   return data.items
+}
+
+export async function fetchOperations(): Promise<OperationalContext> {
+  const { data } = await client.get<OperationalContext>(`${BASE}/operations`)
+  return data
 }
 
 export async function updateWorkflow(

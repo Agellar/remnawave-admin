@@ -205,6 +205,73 @@ def test_unrestricted_confirmation_token_keeps_legacy_format():
 
 
 @pytest.mark.asyncio
+async def test_throttled_recipients_are_skipped_and_missing_migration_is_safe(monkeypatch):
+    people = [
+        {"uuid": USER_A, "telegram_id": 10, "days_until_expire": None},
+        {"uuid": USER_B, "telegram_id": 20, "days_until_expire": None},
+    ]
+    monkeypatch.setattr(data, "list_segment", AsyncMock(return_value=people))
+    monkeypatch.setattr(store, "recently_messaged", AsyncMock(return_value=set()))
+    thresholds = {"message_cooldown_days": 7, "max_recipients_per_campaign": 100}
+
+    db = AsyncMock()
+    db.fetchval.return_value = None
+    allowed, skipped = await campaigns.recipients(db, "lapsed", thresholds, {})
+    assert [item["uuid"] for item in allowed] == [USER_A, USER_B]
+    assert skipped["throttled"] == 0
+    db.fetch.assert_not_awaited()
+
+    db.fetchval.return_value = "user_throttles"
+    db.fetch.return_value = [{"user_uuid": USER_A}]
+    allowed, skipped = await campaigns.recipients(db, "lapsed", thresholds, {})
+    assert [item["uuid"] for item in allowed] == [USER_B]
+    assert skipped["throttled"] == 1
+    assert "until IS NULL OR until > NOW()" in db.fetch.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_dry_run_reports_throttled_count_without_send_side_effects(monkeypatch):
+    person = {"uuid": USER_B, "telegram_id": 20}
+    skipped = {
+        "no_telegram": 0,
+        "cooldown": 0,
+        "over_limit": 0,
+        "bedolaga_auto": 0,
+        "active_incident": 0,
+        "throttled": 1,
+    }
+    monkeypatch.setattr(campaigns, "recipients", AsyncMock(return_value=([person], skipped)))
+    monkeypatch.setattr(store, "open_campaign", AsyncMock(return_value=(41, True)))
+    monkeypatch.setattr(store, "close_campaign", AsyncMock())
+    create_offer = AsyncMock()
+    send_broadcast = AsyncMock()
+    monkeypatch.setattr(campaigns.bedolaga, "create_offer", create_offer)
+    monkeypatch.setattr(campaigns.bedolaga, "send_broadcast", send_broadcast)
+    thresholds = {"discount_lapsed": 30, "offer_valid_hours": 72}
+    token = campaigns.confirm_token("lapsed", "hello", 30, [20])
+
+    result = await campaigns.send(
+        object(),
+        _ctx(),
+        segment="lapsed",
+        message_text="hello",
+        token=token,
+        dry_run=True,
+        admin_username="operator",
+        th=thresholds,
+        bedolaga_cfg={},
+        safety={},
+    )
+
+    assert result["skipped_throttled"] == 1
+    assert result["offers_created"] == 0
+    assert result["offer_errors"] == 0
+    assert result["broadcast_id"] is None
+    create_offer.assert_not_awaited()
+    send_broadcast.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_scope_change_invalidates_preview_before_any_send_side_effect(monkeypatch):
     person = {"uuid": USER_A, "telegram_id": 10}
     recipient_lookup = AsyncMock(return_value=([person], {}))

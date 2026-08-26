@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from . import freshness, store
+from . import freshness, operations, store
 
 
 RBAC_RESOURCES = {"incident_center": ["view", "manage"]}
@@ -42,6 +42,10 @@ def build_router(ctx) -> APIRouter:
     @router.get("/freshness")
     async def data_freshness(_: Any = Depends(can_view)) -> dict:
         return await freshness.system_status(ctx.db)
+
+    @router.get("/operations")
+    async def operational_state(_: Any = Depends(can_view)) -> dict:
+        return await operations.operational_context(ctx.db)
 
     @router.get("/incidents/{incident_id}/events")
     async def incident_events(

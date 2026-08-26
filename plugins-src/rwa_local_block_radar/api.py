@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import time
 import zlib
 from datetime import datetime, timezone
@@ -15,6 +16,38 @@ from . import ai, probes as probes_mod, qcode, settings as settings_mod, store
 
 RBAC_RESOURCES = {"block_radar": ["view", "settings", "edit"]}
 _VERDICTS = {"confirmed", "false_positive"}
+MIN_COMPATIBLE_AGENT_VERSION = "1.7.3"
+
+
+def _version_tuple(value: Any) -> tuple[int, int, int] | None:
+    match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)", str(value or ""))
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _agent_compatibility(rows: list[Any]) -> dict[str, Any]:
+    minimum = _version_tuple(MIN_COMPATIBLE_AGENT_VERSION)
+    incompatible: list[dict[str, str]] = []
+    unknown: list[str] = []
+    compatible = 0
+    for raw in rows:
+        row = dict(raw)
+        name = str(row.get("name") or "node")
+        version = str(row.get("agent_version") or "").strip()
+        parsed = _version_tuple(version)
+        if parsed is None:
+            unknown.append(name)
+        elif minimum is not None and parsed < minimum:
+            incompatible.append({"node_name": name, "agent_version": version})
+        else:
+            compatible += 1
+    return {
+        "minimum_version": MIN_COMPATIBLE_AGENT_VERSION,
+        "total": len(rows),
+        "compatible": compatible,
+        "incompatible": incompatible,
+        "unknown": unknown,
+        "warning": bool(incompatible or unknown),
+    }
 
 
 def _current_probe_rows(rows: list[Any], targets: list[dict]) -> list[Any]:
@@ -65,6 +98,11 @@ def _alert(row) -> dict:
             "support_note": row["ai_support_note"],
             "provider": row["ai_provider"],
             "model": row["ai_model"],
+            "availability": (
+                row["ai_availability"]
+                if "ai_availability" in row and row["ai_availability"]
+                else "available"
+            ),
             "created_at": row["ai_created_at"].isoformat(),
             "updated_at": row["ai_updated_at"].isoformat(),
         }
@@ -111,6 +149,10 @@ def build_router(ctx, state: dict) -> APIRouter:
         rows = await ctx.db.fetch(
             "SELECT * FROM local_block_radar_alerts WHERE resolved_at IS NULL ORDER BY since DESC"
         )
+        agents = await ctx.db.fetch(
+            """SELECT name, agent_version FROM nodes
+                WHERE NOT COALESCE(is_disabled, false) ORDER BY name"""
+        )
         dips = [
             {
                 "node_uuid": str(row["node_uuid"]),
@@ -138,6 +180,7 @@ def build_router(ctx, state: dict) -> APIRouter:
             "license_state": "not_required",
             "license_tier": "local",
             "license_paid_until": None,
+            "agent_compatibility": _agent_compatibility(agents),
             **_probe_schedule(state),
         }
 
@@ -234,7 +277,8 @@ def build_router(ctx, state: dict) -> APIRouter:
                        x.evidence AS ai_evidence,
                        x.recommendations AS ai_recommendations,
                        x.support_note AS ai_support_note, x.provider AS ai_provider,
-                       x.model AS ai_model, x.created_at AS ai_created_at,
+                       x.model AS ai_model, x.availability AS ai_availability,
+                       x.created_at AS ai_created_at,
                        x.updated_at AS ai_updated_at
                   FROM local_block_radar_alerts a
              LEFT JOIN local_block_radar_ai_analyses x ON x.alert_id=a.id

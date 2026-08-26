@@ -136,8 +136,19 @@ class ViolationCard(BaseModel):
     score: Optional[float] = None
     confidence: Optional[float] = None
     reason: Optional[str] = None
+    # ``action`` is the compatibility alias used by older frontends.
     action: Optional[str] = None
+    recommended_action: Optional[str] = None
+    action_taken: Optional[str] = None
     is_resolved: bool = False
+
+
+class ThrottleCard(BaseModel):
+    active: bool = True
+    rate_kbit: int
+    reason: Optional[str] = None
+    created_at: Optional[datetime] = None
+    until: Optional[datetime] = None
 
 
 class IncidentCard(BaseModel):
@@ -179,6 +190,7 @@ class ReportResponse(BaseModel):
     history_24h: HistorySection
     client: ClientSection
     nodes: List[NodeCard] = Field(default_factory=list)
+    throttle: Optional[ThrottleCard] = None
     correlations: List[CorrelationCluster] = Field(default_factory=list)
     violations_recent: List[ViolationCard] = Field(default_factory=list)
     incidents_active: List[IncidentCard] = Field(default_factory=list)

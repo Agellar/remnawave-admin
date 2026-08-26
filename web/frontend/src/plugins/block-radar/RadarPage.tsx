@@ -137,6 +137,7 @@ export default function RadarPage() {
       {licenseError && <LicenseBanner error={licenseError} />}
 
       {!licenseError && <ExpiryNotice status={status.data ?? null} />}
+      {!licenseError && <AgentCompatibilityNotice status={status.data ?? null} />}
 
       {!licenseError && <OverviewCards data={overview.data ?? null} />}
 
@@ -877,7 +878,7 @@ function AlertCard({ alert }: { alert: RadarAlert }) {
           <span className="text-xs font-medium text-white">
             {t('plugins.block_radar.ai.title')}
           </span>
-          {analysis && (
+          {analysis && analysis.availability !== 'unavailable' && (
             <span className="text-[10px] text-violet-300 ml-auto">
               {t(`plugins.block_radar.ai.classifications.${analysis.classification}`)} ·{' '}
               {Math.round(analysis.confidence * 100)}%
@@ -886,6 +887,11 @@ function AlertCard({ alert }: { alert: RadarAlert }) {
         </div>
         {analysis ? (
           <div className="space-y-2 text-xs">
+            {analysis.availability === 'unavailable' && (
+              <p className="rounded border border-amber-500/30 bg-amber-500/[0.08] p-2 text-amber-200">
+                {t('plugins.block_radar.ai.unavailable')}
+              </p>
+            )}
             <p className="text-dark-200 leading-relaxed">{analysis.summary}</p>
             {analysis.evidence.length > 0 && (
               <div>
@@ -1058,6 +1064,24 @@ function ExpiryNotice({ status }: { status: RadarStatus | null }) {
         </p>
         <p className="text-xs text-dark-300">{t('plugins.block_radar.expiry_hint')}</p>
       </div>
+    </div>
+  )
+}
+
+function AgentCompatibilityNotice({ status }: { status: RadarStatus | null }) {
+  const { t } = useTranslation()
+  const compatibility = status?.agent_compatibility
+  if (!compatibility?.warning) return null
+  const affected = [
+    ...compatibility.incompatible.map((item) => `${item.node_name} (${item.agent_version})`),
+    ...compatibility.unknown.map((name) => `${name} (?)`),
+  ]
+  return (
+    <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.08] p-3 text-xs text-amber-100">
+      {t('plugins.block_radar.agent_warning', {
+        version: compatibility.minimum_version,
+        nodes: affected.join(', '),
+      })}
     </div>
   )
 }

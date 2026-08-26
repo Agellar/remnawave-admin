@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import inspect
+import shutil
+import subprocess
 import sys
+import textwrap
 import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -266,6 +269,130 @@ def test_browser_polling_is_non_overlapping_abortable_and_visibility_aware():
     assert "pd.truncated" in MODULE_JS
 
 
+def test_large_fleet_ui_is_idempotent_paged_and_unmounted_cleanly():
+    assert "ZMIN = 0.5, ZMAX = 4" in MODULE_JS
+    assert "var MIN_SCALE = 0.7" in MODULE_JS
+    assert "var GRID_ROWS = 20" in MODULE_JS
+    assert "var COLUMN_PAGE = 50" in MODULE_JS
+    assert "function uniqSinks" in MODULE_JS
+    assert "if (html === lastSvgHtml) return" in MODULE_JS
+    assert "requestAnimationFrame(update)" in MODULE_JS
+    assert "unwatchLive();" in MODULE_JS
+    assert "cancelAnimationFrame(raf)" in MODULE_JS
+    assert "class=\"lf-panel-pager\"" in MODULE_JS
+    assert MODULE_JS.count("class=\"lf-pager\"") == 1
+    assert "aria-pressed" in MODULE_JS
+    assert "aria-label" in MODULE_JS
+
+
+def test_browser_normalises_corrupt_prefs_and_resets_empty_filter_pager(tmp_path):
+    """Exercise the shipped JS in a DOM, not just by matching source strings."""
+    node = shutil.which("node")
+    frontend = Path(__file__).resolve().parents[3] / "web" / "frontend"
+    if node is None or not (frontend / "node_modules" / "jsdom" / "package.json").is_file():
+        pytest.skip("Node.js with the frontend jsdom dependency is required")
+
+    module_path = tmp_path / "live-flow-module.js"
+    module_path.write_text(MODULE_JS, encoding="utf-8")
+    driver = textwrap.dedent(
+        r"""
+        const fs = require('fs');
+        const { JSDOM } = require('jsdom');
+        const source = fs.readFileSync(process.argv[1], 'utf8');
+        const dom = new JSDOM('<!doctype html><html><head></head><body><div id="root"></div></body></html>', {
+          url: 'https://panel.example/plugins/live-flow',
+          runScripts: 'outside-only',
+          pretendToBeVisual: true,
+        });
+        const w = dom.window;
+        Object.defineProperty(w.document, 'currentScript', {
+          configurable: true,
+          value: { src: 'https://panel.example/api/v2/plugins/live_flow/ui-module' },
+        });
+        w.localStorage.setItem('i18nextLng', 'ru');
+        w.localStorage.setItem('lf.prefs', JSON.stringify({
+          view: 'broken', q: { nested: true }, onlyActive: 'yes',
+          onlyTraffic: 1, page: -4.2,
+        }));
+        w.requestAnimationFrame = (callback) => w.setTimeout(() => callback(Date.now()), 0);
+        w.cancelAnimationFrame = (id) => w.clearTimeout(id);
+        w.ResizeObserver = class { observe() {} disconnect() {} };
+        const nodes = Array.from({ length: 101 }, (_, index) => ({
+          uuid: `00000000-0000-0000-0000-${String(index + 1).padStart(12, '0')}`,
+          name: `Node ${index + 1}`,
+          connected: true,
+          users: 1,
+          active: 1,
+          vpn_mbps: 1,
+          tx_mbps: 1,
+          rx_mbps: 1,
+          position: index,
+          sinks: ['internet'],
+          cascades: [],
+          inbounds: [],
+          profile: 'default',
+        }));
+        const payload = {
+          nodes,
+          sinks: [{ tag: 'internet', kind: 'internet', title: 'Internet' }],
+          total_active: 101,
+          total_users: 101,
+          can_view_users: false,
+          profiles_available: true,
+          live_source: 'panel-live',
+        };
+        w.fetch = async () => ({ ok: true, json: async () => payload });
+        const wait = (ms) => new Promise((resolve) => w.setTimeout(resolve, ms));
+
+        (async () => {
+          w.eval(source);
+          const root = w.document.getElementById('root');
+          w.rwaPluginUI.live_flow.mount(root);
+          await wait(80);
+          const view = root.querySelector('#suptaz-live-flow-view');
+          if (!view || !view.querySelector('svg')) throw new Error('mount/render failed');
+          if (view.querySelector('.lf-q').value !== '') throw new Error('q was not normalised');
+          if (view.querySelector('.lf-f-active').checked) throw new Error('onlyActive was not normalised');
+          if (view.querySelector('.lf-f-traffic').checked) throw new Error('onlyTraffic was not normalised');
+          if (view.querySelector('[data-view="column"]').getAttribute('aria-pressed') !== 'true') {
+            throw new Error('view was not normalised');
+          }
+
+          view.querySelector('[data-view="grid"]').click();
+          await wait(30);
+          if (view.querySelector('.lf-pg-l').textContent !== '1 из 6') {
+            throw new Error('large-fleet pager did not initialise');
+          }
+          const search = view.querySelector('.lf-q');
+          search.value = 'definitely-no-node';
+          search.dispatchEvent(new w.Event('input', { bubbles: true }));
+          await wait(220);
+          if (view.querySelector('.lf-pg-l').textContent !== '1 из 1') {
+            throw new Error('empty-filter pager kept stale page count');
+          }
+          const buttons = view.querySelectorAll('.lf-pg');
+          if (!buttons[0].disabled || !buttons[1].disabled) {
+            throw new Error('empty-filter pager controls stayed active');
+          }
+          w.rwaPluginUI.live_flow.unmount();
+          dom.window.close();
+        })().catch((error) => {
+          console.error(error && error.stack ? error.stack : String(error));
+          process.exitCode = 1;
+        });
+        """
+    )
+    completed = subprocess.run(
+        [node, "-e", driver, str(module_path)],
+        cwd=frontend,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_browser_still_escapes_user_controlled_html():
     assert "function esc(s)" in MODULE_JS
     assert "replace(/[&<>\"]/g" in MODULE_JS
@@ -279,9 +406,9 @@ def test_browser_still_escapes_user_controlled_html():
 def test_audited_upstream_pin_and_provenance_are_present():
     root = Path(__file__).resolve().parents[1]
     provenance = (root / "UPSTREAM.md").read_text(encoding="utf-8")
-    assert UPSTREAM_VERSION == "0.16.0"
-    assert FORK_VERSION == "0.16.0+agellar.1"
-    assert UPSTREAM_COMMIT == "a0962f623afcacd4c7cd96b472ec8eae76885e76"
+    assert UPSTREAM_VERSION == "0.17.0"
+    assert FORK_VERSION == "0.17.0+agellar.2"
+    assert UPSTREAM_COMMIT == "c84cadde9aa2f31e70ebbd32bc1ebb0ba3d18b49"
     assert UPSTREAM_COMMIT in provenance
-    assert "4196ba13f2fac4bf76411d6357c4b35c56898630b2004b1fc862985b11111dc3" in provenance
+    assert "805aaba053b9b5aa9ad42070ab731b54bf2472d3eab9f8373bf453c4934a6dfb" in provenance
     assert (root / "LICENSE.upstream").is_file()

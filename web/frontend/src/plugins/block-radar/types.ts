@@ -20,6 +20,7 @@ export interface RadarTick {
   alerts_resolved?: number
   notified?: number
   external_monitoring?: boolean
+  restart_suppressed?: number
 }
 
 /**
@@ -71,6 +72,16 @@ export interface RadarStatus {
   license_tier: string | null
   /** Unix-время окончания подписки: нужно, чтобы предупредить до отключения. */
   license_paid_until: number | null
+  agent_compatibility?: RadarAgentCompatibility
+}
+
+export interface RadarAgentCompatibility {
+  minimum_version: string
+  total: number
+  compatible: number
+  incompatible: Array<{ node_name: string; agent_version: string }>
+  unknown: string[]
+  warning: boolean
 }
 
 export interface RadarAffected {
@@ -188,6 +199,7 @@ export interface RadarAIAnalysis {
   support_note?: string | null
   provider: string
   model: string
+  availability?: 'available' | 'unavailable'
   created_at: string
   updated_at: string
 }
@@ -199,6 +211,8 @@ export interface RadarAIStatus {
   provider?: string | null
   model: string
   used: number
+  attempted?: number
+  succeeded?: number
   monthly_limit: number
 }
 

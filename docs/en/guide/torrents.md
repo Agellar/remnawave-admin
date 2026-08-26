@@ -14,8 +14,8 @@ Nothing else is required — no packages to install on the node, no `.env` to ed
 
 The toggle state is pushed to every connected agent immediately, and re-sent to an agent when it connects — a node restart does not lose the setting.
 
-::: tip The agent must be 1.5.0 or newer
-The daemon appeared in the agent image in version 1.5.0. An older agent answers honestly that it has no binaries, and the panel shows that — the toggle will not pretend everything is running.
+::: tip Safe detection requires Agent 1.7.3 or newer
+The daemon first shipped in 1.5.0, but versions 1.7.1–1.7.3 close important false-positive paths: they no longer attribute a shared destination to every user, ignore weak nDPI guesses, and filter service/web-port noise. Admin 4.6.2 therefore expects Agent 1.7.3. An older agent still reports its version honestly, but does not provide the full set of protections.
 :::
 
 ## How a verdict becomes a violation

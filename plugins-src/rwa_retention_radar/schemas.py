@@ -97,6 +97,8 @@ class SkipReasons(BaseModel):
     bedolaga_auto: int = 0
     # Пользователь недавно работал через ноду с активным Incident Hub событием.
     active_incident: int = 0
+    # Active administrative speed limit; excluded from every campaign mode.
+    throttled: int = 0
 
 
 class CampaignPreviewOut(BaseModel):
@@ -150,6 +152,7 @@ class CampaignSendOut(BaseModel):
     offer_errors: int = 0
     broadcast_id: Optional[int] = None
     status: str
+    skipped_throttled: int = 0
 
 
 class CampaignRecord(BaseModel):

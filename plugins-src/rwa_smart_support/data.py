@@ -486,6 +486,34 @@ async def nodes_section(db, user_uuid: str, hours: int = 24) -> List[Dict[str, A
     return out
 
 
+async def throttle_section(db, user_uuid: str) -> Optional[Dict[str, Any]]:
+    """Return the active administrative speed limit, when the migration exists.
+
+    The plugin can be loaded while the panel upgrade is still between code
+    rollout and migration 0102.  ``to_regclass`` keeps that window read-only
+    and non-fatal instead of turning every support report into a 500.
+    """
+    exists = await db.fetchval("SELECT to_regclass($1)", "public.user_throttles")
+    if str(exists or "") not in {"user_throttles", "public.user_throttles"}:
+        return None
+    row = await db.fetchrow(
+        """SELECT rate_kbit, reason, created_at, until
+             FROM user_throttles
+            WHERE user_uuid = $1::uuid
+              AND (until IS NULL OR until > NOW())""",
+        user_uuid,
+    )
+    if not row:
+        return None
+    return {
+        "active": True,
+        "rate_kbit": int(row["rate_kbit"]),
+        "reason": row["reason"],
+        "created_at": row["created_at"],
+        "until": row["until"],
+    }
+
+
 async def violations_section(db, user_uuid: str, days: int = 14) -> List[Dict[str, Any]]:
     rows = await db.fetch(
         """SELECT id, detected_at, score, confidence, reasons, recommended_action,
@@ -514,7 +542,12 @@ async def violations_section(db, user_uuid: str, days: int = 14) -> List[Dict[st
             "score": float(r["score"]) if r["score"] is not None else None,
             "confidence": float(r["confidence"]) if r["confidence"] is not None else None,
             "reason": reason,
+            # Keep ``action`` for older frontends, but expose the two official
+            # semantics separately: a recommendation is not proof that an
+            # administrative action was executed.
             "action": r["recommended_action"],
+            "recommended_action": r["recommended_action"],
+            "action_taken": r["action_taken"],
             "is_resolved": bool(r["action_taken"]),
         })
     return out

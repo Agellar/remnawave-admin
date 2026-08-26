@@ -406,7 +406,7 @@ function HypothesisRow({
 
   return (
     <li
-      className={`flex items-start gap-3 rounded-lg border-l-2 px-3 py-2 ${palette.bg} ${palette.border}`}
+      className={`flex items-start gap-3 rounded-lg border px-3 py-2 ${palette.bg} ${palette.border}`}
     >
       <AlertCircle className={`w-4 h-4 mt-0.5 shrink-0 ${palette.icon}`} />
       <div className="min-w-0 flex-1">
@@ -517,6 +517,26 @@ function UserCard({ report }: { report: ReportResponse }) {
   const trafficPercent = u.traffic.percent
   return (
     <Section title={t('plugins.smart_support.report.sections.user')} icon={UsersIcon}>
+      {report.throttle?.active && (
+        <div className="mb-3 rounded border border-amber-500/40 bg-amber-500/[0.08] p-3 text-xs">
+          <div className="font-medium text-amber-200">
+            {t('plugins.smart_support.report.fields.throttle_active', {
+              rate: report.throttle.rate_kbit,
+            })}
+          </div>
+          <div className="mt-1 text-dark-300">
+            {t('plugins.smart_support.report.fields.throttle_until')}: {' '}
+            {report.throttle.until
+              ? fmtDate(report.throttle.until)
+              : t('plugins.smart_support.report.fields.throttle_manual')}
+          </div>
+          {report.throttle.reason && (
+            <div className="mt-1 text-dark-300">
+              {t('plugins.smart_support.report.fields.throttle_reason')}: {report.throttle.reason}
+            </div>
+          )}
+        </div>
+      )}
       <KV label={t('plugins.smart_support.report.fields.status')} value={u.status} />
       <KV label={t('plugins.smart_support.report.fields.expire_at')} value={fmtDate(u.expire_at)} />
       <KV
@@ -855,7 +875,11 @@ function ViolationsCard({ report }: { report: ReportResponse }) {
               <span className="text-xs text-dark-300">{fmtDate(v.created_at)}</span>
             </div>
             <div className="text-xs text-dark-400">
-              {v.action ?? '—'} · score {v.score?.toFixed(2) ?? '—'}
+              {t('plugins.smart_support.report.fields.recommended_action')}: {' '}
+              {v.recommended_action ?? v.action ?? '—'} · score {v.score?.toFixed(2) ?? '—'}
+            </div>
+            <div className="text-xs text-dark-400">
+              {t('plugins.smart_support.report.fields.action_taken')}: {v.action_taken ?? '—'}
             </div>
           </li>
         ))}

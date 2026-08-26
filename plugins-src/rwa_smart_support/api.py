@@ -148,6 +148,7 @@ def build_router(ctx) -> APIRouter:
         history = await data.history_section(db, user_uuid)
         client = await data.client_section(db, user_uuid, latest_versions)
         nodes = await data.nodes_section(db, user_uuid)
+        throttle = await data.throttle_section(db, user_uuid)
         # Local, verified Incident Center state is independent from the
         # optional external ISP outage lookup and must always remain visible.
         incidents = await active_for_nodes(db, [node["uuid"] for node in nodes])
@@ -185,6 +186,7 @@ def build_router(ctx) -> APIRouter:
             "history_24h": history,
             "client": client,
             "nodes": nodes,
+            "throttle": throttle,
             "correlations": correlations,
             "violations_recent": violations,
             "incidents_active": incidents,

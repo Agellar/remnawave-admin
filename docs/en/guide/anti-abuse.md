@@ -62,7 +62,7 @@ Hard-block thresholds are configured separately — by number of addresses, simu
 
 Between "warn" and "cut off entirely" there is a middle measure: **throttle the speed**. The person stays online — sites and messengers work, video and torrents don't — notices the internet has gone weird, and comes to sort it out. A full block gets you nothing of the sort: they simply disappear.
 
-The limit is attached to the user's **address**, via `tc` rules on the node. It touches neither the Xray config nor squad membership, so it applies and lifts instantly and affects nobody else. Requires agent 1.7.0 or newer.
+The limit is attached to the user's **address**, via `tc` rules on the node, and by itself changes neither the Xray config nor squad membership. Moving the user to a reserve squad is a separate optional setting. The `tc` command first appeared in Agent 1.7.0; the supported Admin 4.6.2 pairing uses Agent 1.7.3. The nDPI false-positive fixes concern torrent detection and are documented in that section.
 
 **Settings → Violations → Speed throttling:**
 

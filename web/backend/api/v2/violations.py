@@ -63,6 +63,19 @@ def _parse_hwid_matched(raw) -> list | None:
     return None
 
 
+def _throttle_restore_required(record: dict | None) -> bool:
+    """Whether a throttle record carries a non-empty saved squad list."""
+    if not record:
+        return False
+    raw = record.get("prev_squads")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return False
+    return isinstance(raw, list) and bool(raw)
+
+
 def _row_to_list_item(v: dict) -> ViolationListItem:
     """Convert a DB row dict to ViolationListItem (handles UUID→str, None defaults)."""
     score = float(v.get('score', 0) or 0)
@@ -899,23 +912,36 @@ async def _handle_blacklisted_hwid_users(
 
 
 @router.get("/throttles", response_model=ThrottleListResponse)
+@limiter.limit(RATE_READ)
 async def list_throttles(
-    admin: AdminUser = Depends(require_permission("violations", "read")),
+    request: Request,
+    admin: AdminUser = Depends(require_permission("violations", "view")),
     db: DatabaseService = Depends(get_db),
 ):
     """Действующие ограничения скорости."""
+    from web.backend.core.rbac import get_visible_user_uuids
+
+    visible = await get_visible_user_uuids(admin)
     rows = await db.get_active_throttles()
+    if visible is not None:
+        rows = [
+            row for row in rows
+            if str(row.get("user_uuid", "")).lower() in visible
+        ]
+
+    user_uuids = [str(row["user_uuid"]) for row in rows]
+    users = await db.batch_get_users_info(user_uuids) if user_uuids else {}
+    users_by_uuid = {
+        str(user_uuid).lower(): user
+        for user_uuid, user in users.items()
+    }
 
     items = []
     for row in rows:
-        username = None
-        try:
-            user = await db.get_user_by_uuid(str(row["user_uuid"]))
-            username = (user or {}).get("username")
-        except Exception:
-            pass
+        user_uuid = str(row["user_uuid"])
+        username = (users_by_uuid.get(user_uuid.lower()) or {}).get("username")
         items.append(ThrottleItem(
-            user_uuid=str(row["user_uuid"]),
+            user_uuid=user_uuid,
             username=username,
             rate_kbit=int(row["rate_kbit"]),
             reason=row.get("reason"),
@@ -928,6 +954,7 @@ async def list_throttles(
 
 
 @router.post("/throttle")
+@limiter.limit(RATE_MUTATIONS)
 async def add_throttle(
     data: ThrottleAddRequest,
     request: Request,
@@ -935,6 +962,12 @@ async def add_throttle(
     db: DatabaseService = Depends(get_db),
 ):
     """Ограничить пользователю скорость вместо полного отключения."""
+    from web.backend.core.rbac import get_visible_user_uuids
+
+    visible = await get_visible_user_uuids(admin)
+    if visible is not None and data.user_uuid.lower() not in visible:
+        raise api_error(403, E.FORBIDDEN)
+
     from shared.config_service import config_service
 
     rate_kbit = data.rate_kbit or int(config_service.get("throttle_default_kbit", 1024) or 1024)
@@ -995,6 +1028,7 @@ async def add_throttle(
 
 
 @router.delete("/throttle/{user_uuid}")
+@limiter.limit(RATE_MUTATIONS)
 async def remove_throttle(
     user_uuid: str,
     request: Request,
@@ -1002,11 +1036,20 @@ async def remove_throttle(
     db: DatabaseService = Depends(get_db),
 ):
     """Снять ограничение скорости."""
+    from web.backend.core.rbac import get_visible_user_uuids
+
+    visible = await get_visible_user_uuids(admin)
+    if visible is not None and user_uuid.lower() not in visible:
+        raise api_error(403, E.FORBIDDEN)
+
     from shared.throttle import lift_throttle
 
+    throttle = await db.get_user_throttle(user_uuid)
+    restore_required = _throttle_restore_required(throttle)
     removed, restored = await lift_throttle(user_uuid)
     if not removed:
         raise api_error(404, E.USER_NOT_FOUND, "Throttle not found")
+    restore_failed = bool(removed and restore_required and not restored)
 
     try:
         from web.backend.core.throttle_sync import push_throttles
@@ -1020,11 +1063,20 @@ async def remove_throttle(
         action="violation.throttle.remove",
         resource="violations",
         resource_id=user_uuid,
-        details=json.dumps({"squads_restored": restored}, ensure_ascii=False),
+        details=json.dumps({
+            "squads_restored": restored,
+            "restore_required": restore_required,
+            "restore_failed": restore_failed,
+        }, ensure_ascii=False),
         ip_address=get_client_ip(request),
     )
 
-    return {"success": True, "squads_restored": restored}
+    return {
+        "success": True,
+        "squads_restored": restored,
+        "restore_required": restore_required,
+        "restore_failed": restore_failed,
+    }
 
 
 @router.get("/{violation_id}", response_model=ViolationDetail)

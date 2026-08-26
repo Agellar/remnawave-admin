@@ -5,6 +5,7 @@ import pytest
 
 from rwa_incident_hub import store as incident_store
 from rwa_incident_hub import freshness as incident_freshness
+from rwa_incident_hub import operations as incident_operations
 from rwa_incident_hub.plugin import manifest as incident_manifest
 from rwa_local_block_radar import engine as radar_engine
 from rwa_retention_radar import campaigns, settings as retention_settings, store as retention_store
@@ -123,9 +124,109 @@ def test_incident_center_manifest_is_free_and_operator_facing():
     item = incident_manifest()
     assert item.id == "incident_center"
     assert item.billing == "free"
-    assert item.version == "0.1.1"
+    assert item.version == "0.1.2"
     assert item.navigation[0].path == "/plugins/incident-center"
     assert item.navigation[0].permission == ("incident_center", "view")
+
+
+def test_incident_center_requires_explicit_restore_failure_evidence():
+    assert incident_operations.restore_failure_evidence(
+        '{"restore_failed": true, "squads_restored": false}'
+    ) == {"restore_failed": True}
+    assert incident_operations.restore_failure_evidence(
+        {"restore_required": True, "squads_restored": False}
+    ) == {"restore_required": True, "squads_restored": False}
+    # In upstream 4.6.2 this lone false is also emitted when there were no
+    # previous squads.  It must not become a speculative incident.
+    assert incident_operations.restore_failure_evidence(
+        {"squads_restored": False}
+    ) is None
+    assert incident_operations.restore_failure_evidence("not-json") is None
+
+
+@pytest.mark.asyncio
+async def test_incident_operations_are_safe_when_source_tables_are_missing():
+    db = AsyncMock()
+    db.fetchval.side_effect = [None, None]
+    result = await incident_operations.operational_context(db)
+    assert result["agent_rollout"]["source_state"] == "missing"
+    assert result["audit"]["source_state"] == "missing"
+    assert result["audit"]["restore_failures"] == []
+    db.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_incident_operations_aggregate_rollout_restarts_and_throttle_audit():
+    db = AsyncMock()
+    db.fetchval.side_effect = ["nodes", "admin_audit_log"]
+    now = datetime.now(timezone.utc)
+    db.fetch.side_effect = [
+        [
+            {"node_uuid": "node-1", "name": "ready", "agent_version": "1.7.3"},
+            {"node_uuid": "node-2", "name": "rollout", "agent_version": "1.7.2"},
+        ],
+        [
+            {
+                "id": 10, "action": "violation.throttle.add",
+                "resource_id": "private-user-uuid", "details": "{}", "created_at": now,
+            },
+            {
+                "id": 11, "action": "violation.throttle.remove",
+                "resource_id": "private-user-uuid",
+                "details": '{"squads_restored": false}', "created_at": now,
+            },
+            {
+                "id": 12, "action": "violation.throttle.remove",
+                "resource_id": "private-user-uuid",
+                "details": '{"restore_required": true, "restore_failed": true, "squads_restored": false}',
+                "created_at": now,
+            },
+            {
+                "id": 13, "action": "node.restart", "resource_id": "node-2",
+                "details": "{}", "created_at": now,
+            },
+        ],
+    ]
+    result = await incident_operations.operational_context(db)
+    assert result["agent_rollout"]["compatible"] == 1
+    assert result["agent_rollout"]["outdated"] == [
+        {"node_name": "rollout", "agent_version": "1.7.2"}
+    ]
+    assert result["audit"]["throttle_added"] == 1
+    assert result["audit"]["throttle_removed"] == 2
+    assert result["audit"]["operator_restarts"][0]["node_name"] == "rollout"
+    assert result["audit"]["restore_failures"] == [{
+        "audit_event_id": 12,
+        "observed_at": now.isoformat(),
+        "evidence": {"restore_failed": True},
+    }]
+    assert "private-user-uuid" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_incident_reconcile_upserts_only_evidenced_restore_failures(monkeypatch):
+    monkeypatch.setattr(incident_store, "ensure_schema", AsyncMock())
+    monkeypatch.setattr(
+        incident_operations,
+        "operational_context",
+        AsyncMock(return_value={
+            "audit": {
+                "source_state": "available",
+                "restore_failures": [{
+                    "audit_event_id": 42,
+                    "observed_at": "2026-08-26T00:00:00+00:00",
+                    "evidence": {"restore_failed": True},
+                }],
+            }
+        }),
+    )
+    upsert = AsyncMock(return_value=7)
+    monkeypatch.setattr(incident_store, "upsert", upsert)
+    result = await incident_operations.reconcile_restore_failures(object())
+    assert result == {"restore_failures": 1, "audit_source_state": "available"}
+    assert upsert.await_args.kwargs["incident_key"] == "throttle-restore-audit:42"
+    assert upsert.await_args.kwargs["kind"] == "throttle_restore_failed"
+    assert "user_uuid" not in str(upsert.await_args.kwargs)
 
 
 @pytest.mark.asyncio

@@ -110,7 +110,14 @@ SYSTEM_PROMPT_TEMPLATE = (
     "сети провайдера клиента; учитывай его первым, но не расширяй выводы за "
     "пределы переданных данных.\n"
     "8. suggested_action может быть только switch_node, notify_update или null; "
-    "эти подсказки не выполняются автоматически.\n\n"
+    "эти подсказки не выполняются автоматически.\n"
+    "9. administrative_throttle — уже применённая администратором мера, а не "
+    "сбой ноды или провайдера. Она может объяснять низкую скорость. Не предлагай "
+    "самовольно снять или обойти ограничение; только сообщи саппорту, что мера "
+    "активна, если это относится к жалобе.\n"
+    "10. В violations_recent строго различай recommended_action (рекомендация) "
+    "и action_taken (реально выполненное действие). Не утверждай, что мера "
+    "применена, если заполнена только рекомендация.\n\n"
     "{reply_rules}\n\n"
     "Ответь СТРОГО одним JSON-объектом без markdown-обёртки:\n"
     '{{"summary": "2-4 предложения: что происходит с юзером", '
@@ -204,6 +211,16 @@ def build_context(report: Dict[str, Any]) -> Dict[str, Any]:
             "source": outage.get("source"),
         }
 
+    throttle = report.get("throttle")
+    safe_throttle = None
+    if isinstance(throttle, dict) and throttle.get("active"):
+        safe_throttle = {
+            "active": True,
+            "rate_kbit": throttle.get("rate_kbit"),
+            "reason": throttle.get("reason"),
+            "until": throttle.get("until"),
+        }
+
     return {
         "user": {
             "status": user.get("status"),
@@ -249,7 +266,17 @@ def build_context(report: Dict[str, Any]) -> Dict[str, Any]:
             if c.get("kind") == "node" and c.get("is_active", True)
         ],
         "provider_outage": safe_outage,
+        "administrative_throttle": safe_throttle,
         "violations_14d": len(report.get("violations_recent", [])),
+        "violations_recent": [
+            {
+                "score": item.get("score"),
+                "recommended_action": item.get("recommended_action", item.get("action")),
+                "action_taken": item.get("action_taken"),
+            }
+            for item in report.get("violations_recent", [])[:10]
+            if isinstance(item, dict)
+        ],
         "engine_hypotheses": [
             {"rule_id": h["rule_id"], "title": h["title"], "confidence": h["confidence"]}
             for h in report.get("hypotheses", [])
