@@ -1,0 +1,162 @@
+{
+  "schema": 1,
+  "version": "4.6.3-agellar.1",
+  "built_at": "2026-08-28T18:09:41Z",
+  "deployment_started_at": "2026-08-28T18:14:20Z",
+  "source": {
+    "repository": "https://github.com/Agellar/remnawave-admin",
+    "branch": "plugins-agellar",
+    "candidate_commit": "6be472c2b6ce49f4fc7ed2a47099ae79d49c9fed",
+    "upstream_release": "4.6.3",
+    "upstream_commit": "b99ffde54e1483195df6a7b0e2e5c97f73aeb071",
+    "operational_scripts_commit": "85bda388d568c7e844eb1c28edb1eda450edfedd",
+    "image_pins_commit": "88416207c4eaaf8b6458c6ead5b281f3b6399f72"
+  },
+  "distribution": {
+    "scope": "production-host-local",
+    "registry_published": false,
+    "policy": "Unique sha256-named image aliases are never overwritten; actual image IDs and OCI source labels are verified before deployment and backup.",
+    "operational_scripts": "Run from the separately verified Git checkout/catalog, not from scripts embedded in the inactive bot image."
+  },
+  "compatibility": {
+    "migration": "0102",
+    "database_migration_required": false,
+    "node_agent": {
+      "reference_version": "1.8.0",
+      "official_image": "ghcr.io/case211/remnawave-admin-node-agent@sha256:ebee9822755f26cbf88e8ac96de995d83449b29428509d7c5d5905af9c0fef14",
+      "platform_manifests": {
+        "linux_amd64": "sha256:ed86d1aecb0a4ba0f612e66ad2a85d9fab8de0f1443593f55c60d6b1d908fd53",
+        "linux_arm64": "sha256:2c573891723654250d73e43b2d6e2029165e102fb1855e1dd2ade626862c9067"
+      },
+      "rollout": {
+        "updated_and_verified": 6,
+        "deferred": 1,
+        "deferred_version": "1.5.0",
+        "deferred_reason": "live_collector_probe_failed; pre-existing stale metrics",
+        "final_ws_connected": 7,
+        "fresh_metrics_on_updated_nodes": true,
+        "rollback_snapshot_per_updated_node": true,
+        "ndpi_remained_disabled": true
+      },
+      "operational_scripts": [
+        {"path": "scripts/node-agent-1.8.0-preflight.sh", "sha256": "b73a2b194cc84d8569fd00245aeb465c49a8dcde4c6b0710ee10d83bfbe4ef06"},
+        {"path": "scripts/update-node-agent-1.8.0.sh", "sha256": "db9e3581773526c03dda30a837362bc7c73b928488ad269010e71fa2e97e44e8"},
+        {"path": "scripts/node-agent-1.8.0-verify.sh", "sha256": "3f5c4db62038e87aa8b68d6ad08777c5dc946b60881f88da48b3e27bef3eb1f3"}
+      ]
+    }
+  },
+  "plugins": {
+    "smart_support": "1.4.5",
+    "retention_radar": "1.2.5",
+    "block_radar": "0.7.5",
+    "incident_center": "0.1.3",
+    "live_flow": "0.17.0+agellar.2"
+  },
+  "verification": {
+    "backend_and_plugin_tests": {"passed": 334, "failed": 0, "also_run_inside_built_image": true},
+    "node_agent_tests": {"passed": 44, "failed": 0},
+    "node_agent_rollout_script_tests": {"passed": 67, "failed": 0},
+    "frontend_tests": {"passed": 357, "failed": 0},
+    "live_flow_security_tests": {"passed": 17, "failed": 0},
+    "bot_config_notification_tests": {"passed": 16, "failed": 0, "network_disabled": true},
+    "unique_tests_passed": 835,
+    "frontend_typecheck": true,
+    "frontend_production_build": true,
+    "changed_ui_detector_findings": 0,
+    "live_postgresql_timeline": {
+      "largest_user_event_count": 9030,
+      "page_count": 181,
+      "four_query_total_ms": 179,
+      "http_two_page_test_passed": true,
+      "anonymous_request_denied": true
+    },
+    "smart_support_live_recap": {"annulled": 22, "counted_total": 0, "independent_sql_matched": true},
+    "production": {
+      "backend_health": true,
+      "frontend_origin": true,
+      "reverse_proxy_tls_verified": true,
+      "reverse_proxy_html_matches_image": true,
+      "reverse_proxy_asset_responses_ok": 6,
+      "remnawave_tunnel_application_health": true,
+      "all_five_plugin_api_smoke": true,
+      "subscription_history_sync_fresh": true,
+      "subscription_history_freshness_basis": "sync_metadata",
+      "connection_history_fresh": true,
+      "globalping_healthy_targets": 7,
+      "globalping_only_results": 42,
+      "globalping_ru_results": 28,
+      "globalping_control_results": 14,
+      "globalping_timer_enabled": true,
+      "campaign_smoke_dry_run": true,
+      "stale_campaign_confirmation_rejected": true,
+      "new_dry_runs": 1,
+      "new_live_campaigns": 0,
+      "new_offers": 0,
+      "new_broadcasts": 0,
+      "new_send_rows": 0,
+      "active_arms": 0,
+      "active_automations": 0,
+      "active_throttles": 0,
+      "non_admin_containers_unchanged": true
+    }
+  },
+  "effective_safety_settings": {
+    "unusual_hour_rule_enabled": false,
+    "geo_max_simultaneous_countries": 3,
+    "torrent_min_events": 5,
+    "torrent_min_peers": 3,
+    "automatic_soft_throttle": false,
+    "traffic_rate_auto_action": "notify",
+    "live_campaigns_enabled": true,
+    "campaign_server_arm_required": true,
+    "fresh_campaign_data_required": true
+  },
+  "backups": {
+    "pre_deploy": {
+      "path": "/root/remnawave-admin-backups/20260828T173211Z-pre-4.6.3",
+      "sha256_manifest": true,
+      "database_catalog": true,
+      "git_bundle": true,
+      "docker_archive": true,
+      "image_archive_reused_from_verified_unchanged_4_6_2_images": true
+    },
+    "post_deploy": {
+      "path": "/root/remnawave-admin-backups/20260828T182807Z-post-4.6.3",
+      "sha256_manifest": true,
+      "database_catalog": true,
+      "archive_payload_read": true,
+      "database_restore_test": false,
+      "git_bundle": true,
+      "docker_archive": true
+    }
+  },
+  "images": {
+    "backend": {
+      "version_tag": "agellar/remnawave-admin-web-backend:4.6.3-agellar.1",
+      "immutable_alias": "agellar/remnawave-admin-web-backend:sha256-d5de1b72109a2967710d5f4bdcbd7d8f50c1d4f1b06bfd366dd8486b60822fee",
+      "image_id": "sha256:d5de1b72109a2967710d5f4bdcbd7d8f50c1d4f1b06bfd366dd8486b60822fee",
+      "size_bytes": 726908038
+    },
+    "frontend": {
+      "version_tag": "agellar/remnawave-admin-web-frontend:4.6.3-agellar.1",
+      "immutable_alias": "agellar/remnawave-admin-web-frontend:sha256-e50aae68b3516a777bb4b71cae0d4a8c8e02a00c25d3b6fa209fc0eb08eb0c29",
+      "image_id": "sha256:e50aae68b3516a777bb4b71cae0d4a8c8e02a00c25d3b6fa209fc0eb08eb0c29",
+      "size_bytes": 67534378
+    },
+    "bot": {
+      "version_tag": "agellar/remnawave-admin-bot:4.6.3-agellar.1",
+      "immutable_alias": "agellar/remnawave-admin-bot:sha256-a2659e7ccbdbb173e95a45e81cb5c5f9831d6692d7a75b503958b277958b35bc",
+      "image_id": "sha256:a2659e7ccbdbb173e95a45e81cb5c5f9831d6692d7a75b503958b277958b35bc",
+      "size_bytes": 824210383,
+      "running_replicas": 0
+    }
+  },
+  "known_limits": {
+    "one_agent_update_deferred": true,
+    "vendor_catalog_latest_changelogs_verified": false,
+    "vendor_catalog_reason": "license.nexuslink.ru timed out from workstation and production; cached catalog dated 2026-08-24 is not evidence of the latest release",
+    "live_flow_upstream_unchanged": "v0.17.0 / c84cadde9aa2f31e70ebbd32bc1ebb0ba3d18b49",
+    "interactive_browser_fps_verified": false,
+    "browser_reason": "Workstation HTTPS connection timed out and browser session became unavailable; server-side TLS/reverse proxy/assets/API and automated frontend tests passed."
+  }
+}
