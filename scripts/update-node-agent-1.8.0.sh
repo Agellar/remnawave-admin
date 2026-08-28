@@ -95,7 +95,7 @@ require_safe_current_agent() {
   }
   # Never emit resolved Compose: credentials pass directly into a silent,
   # allowlisted check. An absent key must have a confirmed false source default.
-  docker compose config --format json 2>/dev/null | docker exec -i "$container" python -c 'import json, sys; from src.config import Settings; cfg=json.load(sys.stdin); env=cfg["services"]["node-agent"].get("environment") or {}; assert isinstance(env, dict); assert str(env.get("AGENT_NDPI_ENABLED")).strip().lower() in ("0", "false", "no", "off", "f", "n") if "AGENT_NDPI_ENABLED" in env else Settings.model_fields["ndpi_enabled"].default is False' >/dev/null 2>&1 || {
+  docker compose config --format json 2>/dev/null | docker exec -i "$container" python -c 'import json, sys; from src.config import Settings; cfg=json.load(sys.stdin); env=cfg["services"]["node-agent"].get("environment") or {}; assert isinstance(env, dict); values=[value for key, value in env.items() if key.casefold() == "agent_ndpi_enabled"]; assert len(values) <= 1; assert str(values[0]).strip().casefold() in ("0", "false", "no", "off", "f", "n") if values else Settings.model_fields["ndpi_enabled"].default is False' >/dev/null 2>&1 || {
     echo 'ERROR effective_compose_ndpi_not_confirmed_off'
     return 35
   }
@@ -266,7 +266,7 @@ compose_controls_container() {
 }
 
 effective_ndpi_is_off() {
-  docker compose config --format json 2>/dev/null | docker exec -i "$container" python -c 'import json, sys; from src.config import Settings; cfg=json.load(sys.stdin); env=cfg["services"]["node-agent"].get("environment") or {}; assert isinstance(env, dict); assert str(env.get("AGENT_NDPI_ENABLED")).strip().lower() in ("0", "false", "no", "off", "f", "n") if "AGENT_NDPI_ENABLED" in env else Settings.model_fields["ndpi_enabled"].default is False' >/dev/null 2>&1
+  docker compose config --format json 2>/dev/null | docker exec -i "$container" python -c 'import json, sys; from src.config import Settings; cfg=json.load(sys.stdin); env=cfg["services"]["node-agent"].get("environment") or {}; assert isinstance(env, dict); values=[value for key, value in env.items() if key.casefold() == "agent_ndpi_enabled"]; assert len(values) <= 1; assert str(values[0]).strip().casefold() in ("0", "false", "no", "off", "f", "n") if values else Settings.model_fields["ndpi_enabled"].default is False' >/dev/null 2>&1
 }
 
 state="$(docker inspect "$container" --format '{{.State.Status}}' 2>/dev/null || true)"
@@ -303,7 +303,7 @@ rollback() {
   rb_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # The failed target may already be stopped. Validate the restored effective
   # flag in an isolated pinned image, not by exec-ing into that failed agent.
-  docker compose config --format json 2>/dev/null | docker run --rm --pull never --network none -i --entrypoint python "$target_ref" -c 'import json, sys; from src.config import Settings; cfg=json.load(sys.stdin); env=cfg["services"]["node-agent"].get("environment") or {}; assert isinstance(env, dict); assert str(env.get("AGENT_NDPI_ENABLED")).strip().lower() in ("0", "false", "no", "off", "f", "n") if "AGENT_NDPI_ENABLED" in env else Settings.model_fields["ndpi_enabled"].default is False' >/dev/null 2>&1 || {
+  docker compose config --format json 2>/dev/null | docker run --rm --pull never --network none -i --entrypoint python "$target_ref" -c 'import json, sys; from src.config import Settings; cfg=json.load(sys.stdin); env=cfg["services"]["node-agent"].get("environment") or {}; assert isinstance(env, dict); values=[value for key, value in env.items() if key.casefold() == "agent_ndpi_enabled"]; assert len(values) <= 1; assert str(values[0]).strip().casefold() in ("0", "false", "no", "off", "f", "n") if values else Settings.model_fields["ndpi_enabled"].default is False' >/dev/null 2>&1 || {
     printf 'result=rollback_failed\nreason=%s\nstage=effective_ndpi_not_off\n' "$reason" > "$status_file"
     return 1
   }

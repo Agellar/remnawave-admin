@@ -18,7 +18,7 @@ actual_container_id="$(docker inspect "$container" --format '{{.Id}}')"
   echo 'ERROR compose_container_mismatch'
   exit 31
 }
-docker compose config --format json 2>/dev/null | docker exec -i "$container" python -c 'import json, sys; from src.config import Settings; cfg=json.load(sys.stdin); env=cfg["services"]["node-agent"].get("environment") or {}; assert isinstance(env, dict); assert str(env.get("AGENT_NDPI_ENABLED")).strip().lower() in ("0", "false", "no", "off", "f", "n") if "AGENT_NDPI_ENABLED" in env else Settings.model_fields["ndpi_enabled"].default is False' >/dev/null 2>&1 || {
+docker compose config --format json 2>/dev/null | docker exec -i "$container" python -c 'import json, sys; from src.config import Settings; cfg=json.load(sys.stdin); env=cfg["services"]["node-agent"].get("environment") or {}; assert isinstance(env, dict); values=[value for key, value in env.items() if key.casefold() == "agent_ndpi_enabled"]; assert len(values) <= 1; assert str(values[0]).strip().casefold() in ("0", "false", "no", "off", "f", "n") if values else Settings.model_fields["ndpi_enabled"].default is False' >/dev/null 2>&1 || {
   echo 'ERROR effective_compose_ndpi_not_confirmed_off'
   exit 32
 }

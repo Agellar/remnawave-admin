@@ -1,11 +1,14 @@
 """Isolated shell checks: no Docker daemon, host paths, or network are used."""
 from __future__ import annotations
 
+import io
+import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,50 @@ TARGET_REF = f"ghcr.io/case211/remnawave-admin-node-agent@{TARGET_DIGEST}"
 OLD_REF = "test/agent:old"
 OLD_IMAGE_ID = "sha256:old-test-image"
 TARGET_IMAGE_ID = "sha256:target-test-image"
+
+
+def _effective_compose_guards():
+    guards = []
+    for name in ("node-agent-1.8.0-preflight.sh", "update-node-agent-1.8.0.sh", "node-agent-1.8.0-verify.sh"):
+        for line_number, line in enumerate((SCRIPTS / name).read_text(encoding="utf-8").splitlines(), 1):
+            if "cfg=json.load(sys.stdin)" in line:
+                guards.append((f"{name}:{line_number}", line.split(" -c '", 1)[1].split("'", 1)[0]))
+    assert len(guards) == 5  # Includes the detached runner and isolated rollback guard.
+    return guards
+
+
+def _run_effective_compose_guard(code, environment, monkeypatch):
+    config = types.ModuleType("src.config")
+    config.Settings = types.SimpleNamespace(
+        model_fields={"ndpi_enabled": types.SimpleNamespace(default=False)},
+    )
+    monkeypatch.setitem(sys.modules, "src.config", config)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({
+        "services": {"node-agent": {"environment": {"SECRET": "must-not-be-logged", **environment}}},
+    })))
+    exec(code, {})
+
+
+@pytest.mark.parametrize(("script", "code"), _effective_compose_guards())
+@pytest.mark.parametrize("environment", [
+    {"agent_ndpi_enabled": "true"},
+    {"Agent_NdPi_EnAbLeD": "true"},
+    {"AGENT_NDPI_ENABLED": "false", "agent_ndpi_enabled": "true"},
+    {"AGENT_NDPI_ENABLED": "false", "Agent_NdPi_Enabled": "false"},
+])
+def test_all_effective_guards_reject_case_variant_enable_and_duplicates(script, code, environment, monkeypatch, capsys):
+    with pytest.raises(AssertionError):
+        _run_effective_compose_guard(code, environment, monkeypatch)
+    output = capsys.readouterr()
+    assert "must-not-be-logged" not in output.out + output.err, script
+
+
+@pytest.mark.parametrize(("script", "code"), _effective_compose_guards())
+@pytest.mark.parametrize("key", ["agent_ndpi_enabled", "Agent_NdPi_EnAbLeD"])
+def test_all_effective_guards_accept_one_case_variant_false(script, code, key, monkeypatch, capsys):
+    _run_effective_compose_guard(code, {key: "false"}, monkeypatch)
+    output = capsys.readouterr()
+    assert output.out == output.err == "", script
 
 
 def _bash() -> str:
