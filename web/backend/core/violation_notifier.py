@@ -189,7 +189,7 @@ async def _recap_lines(user_uuid: str) -> list:
     from shared.database import db_service
 
     try:
-        days = int(config_service.get("violation_recap_days", 30) or 30)
+        days = max(1, min(365, int(config_service.get("violation_recap_days", 30) or 30)))
     except (TypeError, ValueError):
         days = 30
     try:

@@ -143,6 +143,15 @@ class ViolationCard(BaseModel):
     is_resolved: bool = False
 
 
+class ViolationRecap(BaseModel):
+    window_days: int = Field(default=30, ge=1, le=365)
+    total: int = Field(default=0, ge=0)
+    unresolved: int = Field(default=0, ge=0)
+    resolved: int = Field(default=0, ge=0)
+    annulled: int = Field(default=0, ge=0)
+    last_at: Optional[datetime] = None
+
+
 class ThrottleCard(BaseModel):
     active: bool = True
     rate_kbit: int
@@ -193,6 +202,7 @@ class ReportResponse(BaseModel):
     throttle: Optional[ThrottleCard] = None
     correlations: List[CorrelationCluster] = Field(default_factory=list)
     violations_recent: List[ViolationCard] = Field(default_factory=list)
+    violations_recap: Optional[ViolationRecap] = None
     incidents_active: List[IncidentCard] = Field(default_factory=list)
     hypotheses: List[Hypothesis] = Field(default_factory=list)
     ai_analysis: Optional[AIAnalysis] = None

@@ -153,6 +153,7 @@ def build_router(ctx) -> APIRouter:
         # optional external ISP outage lookup and must always remain visible.
         incidents = await active_for_nodes(db, [node["uuid"] for node in nodes])
         violations = await data.violations_section(db, user_uuid)
+        violations_recap = await data.violations_recap_section(db, user_uuid)
         correlations = await store.correlations_for_user(
             db,
             user_uuid,
@@ -189,6 +190,7 @@ def build_router(ctx) -> APIRouter:
             "throttle": throttle,
             "correlations": correlations,
             "violations_recent": violations,
+            "violations_recap": violations_recap,
             "incidents_active": incidents,
             "hypotheses": hypotheses,
             "ai_analysis": None,

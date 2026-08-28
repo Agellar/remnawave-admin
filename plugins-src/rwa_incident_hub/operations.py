@@ -6,10 +6,12 @@ import re
 from datetime import datetime
 from typing import Any
 
+from shared.agent_version import LATEST_AGENT_VERSION
+
 from . import store
 
 
-MIN_COMPATIBLE_AGENT_VERSION = "1.7.3"
+MIN_COMPATIBLE_AGENT_VERSION = LATEST_AGENT_VERSION
 AUDIT_ACTIONS = (
     "node.restart",
     "nodes.restart",

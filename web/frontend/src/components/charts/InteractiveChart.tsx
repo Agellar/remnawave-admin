@@ -199,16 +199,16 @@ export function InteractiveChart({
     // едут ни цвета, ни порядок в стеке.
     const off = hidden.has(s.key)
     if (type === 'bar') {
-      return <Bar key={s.key} dataKey={s.key} name={s.name} fill={color} stackId={stackId} hide={off}
+      return <Bar key={s.key} dataKey={s.key} name={s.name} fill={color} stackId={stackId} hide={off} isAnimationActive={false}
         radius={stacked ? undefined : [3, 3, 0, 0]} fillOpacity={s.dashed ? 0.4 : 0.85} />
     }
     if (type === 'line') {
-      return <Line key={s.key} type="monotone" dataKey={s.key} name={s.name} stroke={color} hide={off}
+      return <Line key={s.key} type="monotone" dataKey={s.key} name={s.name} stroke={color} hide={off} isAnimationActive={false}
         strokeWidth={s.dashed ? 1.5 : 2} strokeDasharray={s.dashed ? '5 5' : undefined}
         dot={false} activeDot={{ r: 4, fill: color }} />
     }
     // area
-    return <Area key={s.key} type="monotone" dataKey={s.key} name={s.name} stroke={color} stackId={stackId}
+    return <Area key={s.key} type="monotone" dataKey={s.key} name={s.name} stroke={color} stackId={stackId} isAnimationActive={false}
       strokeWidth={s.dashed ? 1.5 : 2} strokeDasharray={s.dashed ? '5 5' : undefined} hide={off}
       fill={s.dashed ? 'none' : `url(#${gradId.current}-${i})`} dot={false}
       activeDot={{ r: 4, fill: color }} />
@@ -302,7 +302,7 @@ export function InteractiveChart({
                   aria-pressed={!off}
                   title={t('charts.legendHint')}
                   className={cn(
-                    'flex items-center gap-1.5 text-[11px] rounded px-1 py-0.5 transition-colors',
+                    'flex min-h-6 items-center gap-1.5 text-xs rounded px-1 py-0.5 transition-colors',
                     'hover:bg-white/5 focus-visible:outline focus-visible:outline-1 focus-visible:outline-primary-400',
                     off ? 'text-muted-foreground/50' : 'text-muted-foreground',
                   )}

@@ -1959,7 +1959,9 @@
       "hwid": "HWID device",
       "daysShort": "d",
       "empty": "No events for this period",
-      "counter": "Page {{page}} of {{pages}} · {{total}} total"
+      "counter": "Page {{page}} of {{pages}} · {{total}} total",
+      "loadError": "Could not load history. Check your connection and retry the request.",
+      "retry": "Reload history"
     },
     "tuning": {
       "title": "Detector threshold tuning",
@@ -2001,11 +2003,11 @@
       }
     },
     "recap": {
-      "hint": "Violations in {{days}} days: {{total}} (annulled: {{annulled}})"
+      "hint": "Non-annulled detections in {{days}} days: {{total}}; annulled separately: {{annulled}}"
     },
     "history": {
       "title": "History over {{days}} days",
-      "summary": "{{total}} total, {{annulled}} annulled",
+      "summary": "{{total}} non-annulled; {{annulled}} annulled separately",
       "annulled": "annulled"
     }
   },

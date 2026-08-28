@@ -1,6 +1,8 @@
 {
   "schema": 1,
   "audited_at": "2026-08-26",
+  "compatibility_rechecked_at": "2026-08-28",
+  "compatible_admin_release": "4.6.3",
   "upstream": {
     "repository": "https://github.com/chudo-arky/rwa-plugin-live-flow",
     "release": "v0.17.0",

@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Set, Tuple
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -18,6 +18,9 @@ import pytest_asyncio
 # Ensure project root is on path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+# Local plugin sources are baked at /app in production. Add the editable
+# checkout path here so focused plugin suites never depend on collection order.
+sys.path.insert(0, str(PROJECT_ROOT / "plugins-src"))
 
 # Set required environment variables BEFORE any app imports
 os.environ.setdefault("WEB_SECRET_KEY", "test-secret-key-for-unit-tests-only")

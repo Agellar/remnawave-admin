@@ -2,13 +2,50 @@
 Connections mixin — user connections, partitioning, torrent events.
 """
 import asyncio
+import ipaddress
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from shared.logger import logger
 from shared.db_schema import USER_CONNECTIONS_TABLE, VIOLATIONS_TABLE, USERS_TABLE, NODES_TABLE
 from shared.db_query import select_sql, insert_sql, update_sql
+
+
+# Bound the data handed to GeoIP without loading individual torrent events.
+TORRENT_WINDOW_MAX_DESTINATIONS = 1024
+# No canonical-IP index exists yet. Read a bounded, index-ordered snapshot of
+# the 24-hour raw window, once per collector batch. Overflow is indeterminate,
+# not evidence that no shared IPs exist. Never inspect a truncated snapshot.
+TORRENT_SHARED_MAX_EVENTS = 100_000
+TORRENT_SHARED_TIMEOUT_SECONDS = 5.0
+
+
+def torrent_destination_ip(destination: str) -> Optional[str]:
+    """Canonical IP of an Xray ``ip:port`` endpoint, never its port or hostname.
+
+    nDPI can report bare IPv6 endpoints while Xray can use brackets. Equivalent
+    IPv6 spellings and IPv4-mapped IPv6 must not manufacture additional peers.
+    Invalid/unknown endpoints are not evidence of an additional peer.
+    """
+    if not isinstance(destination, str):
+        return None
+    host, separator, port = destination.strip().rpartition(":")
+    if not separator or len(port) > 5 or not port.isascii() or not port.isdecimal():
+        return None
+    if not 1 <= int(port) <= 65535:
+        return None
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if "%" in host:
+        return None
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return str(address)
 
 
 class ConnectionsMixin:
@@ -761,6 +798,38 @@ class ConnectionsMixin:
             logger.warning("count_recent_torrent_events failed: %s", e)
             return 0
 
+    async def get_recent_torrent_destination_counts(
+        self, user_uuid: str, minutes: int = 30,
+    ) -> Optional[Dict[str, int]]:
+        """Bounded raw window, grouped by endpoint, for one evidence policy.
+
+        ``None`` means incomplete/unavailable evidence. Callers must not use a
+        partial window to accuse a user. Filtering and both thresholds operate
+        on these same counts; safe destinations may remain in the raw history.
+        """
+        if not self.is_connected:
+            return None
+        try:
+            async with self.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT destination, count(*) AS event_count FROM torrent_events "
+                    "WHERE user_uuid = $1::uuid "
+                    "AND detected_at > NOW() - make_interval(mins => $2) "
+                    "AND detected_at <= NOW() "
+                    "GROUP BY destination LIMIT $3",
+                    user_uuid, minutes, TORRENT_WINDOW_MAX_DESTINATIONS + 1,
+                )
+            if len(rows) > TORRENT_WINDOW_MAX_DESTINATIONS:
+                logger.warning("Torrent evidence window exceeds the destination safety limit")
+                return None
+            return {
+                row["destination"]: int(row["event_count"])
+                for row in rows if row["destination"]
+            }
+        except Exception as e:
+            logger.warning("get_recent_torrent_destination_counts failed: %s", type(e).__name__)
+            return None
+
     async def count_recent_torrent_peers(self, user_uuid: str, minutes: int = 30) -> int:
         """Со сколькими РАЗНЫМИ адресами шёл обмен за окно.
 
@@ -769,49 +838,88 @@ class ConnectionsMixin:
         Пойманный случай: антивирус, восемь событий и ровно один адрес, —
         по счётчику событий это нарушение, по числу пиров очевидно нет.
         """
+        counts = await self.get_recent_torrent_destination_counts(user_uuid, minutes)
+        return len({ip for destination in (counts or {})
+                    if (ip := torrent_destination_ip(destination)) is not None})
+
+    async def get_recent_shared_torrent_ips(self, hours: int = 24) -> Optional[Set[str]]:
+        """Canonical IPs seen for multiple users, including historical aliases.
+
+        ``None`` means the snapshot could not be completed within the row/time
+        budget; accusation must be deferred. The materialized, index-ordered
+        inner query bounds rows *before* aggregation. An oversized window
+        returns only its overflow marker, not 100001 rows over the connection.
+        """
         if not self.is_connected:
-            return 0
+            return None
         try:
-            async with self.acquire() as conn:
-                value = await conn.fetchval(
-                    "SELECT count(DISTINCT destination) FROM torrent_events "
-                    "WHERE user_uuid = $1::uuid "
-                    "AND detected_at > NOW() - make_interval(mins => $2)",
-                    user_uuid, minutes,
-                )
-            return int(value or 0)
+            async with asyncio.timeout(TORRENT_SHARED_TIMEOUT_SECONDS):
+                async with self.acquire() as conn:
+                    rows = await conn.fetch(
+                        """
+                        WITH recent AS MATERIALIZED (
+                            SELECT destination, user_uuid
+                            FROM torrent_events
+                            WHERE detected_at > NOW() - make_interval(hours => $1)
+                              AND detected_at <= NOW()
+                            ORDER BY detected_at DESC
+                            LIMIT $2
+                        ), window_size AS MATERIALIZED (
+                            SELECT count(*) AS total FROM recent
+                        )
+                        SELECT r.destination, r.user_uuid::text AS user_uuid,
+                               size.total AS window_rows
+                        FROM recent r CROSS JOIN window_size size
+                        WHERE size.total < $2
+                        GROUP BY r.destination, r.user_uuid, size.total
+                        UNION ALL
+                        SELECT NULL::text, NULL::text, size.total
+                        FROM window_size size WHERE size.total >= $2
+                        """,
+                        hours, TORRENT_SHARED_MAX_EVENTS + 1,
+                        timeout=TORRENT_SHARED_TIMEOUT_SECONDS,
+                    )
+                if rows and int(rows[0]["window_rows"]) > TORRENT_SHARED_MAX_EVENTS:
+                    logger.warning("Torrent shared-IP evidence deferred: 24h row budget exceeded")
+                    return None
+
+                owners: Dict[str, str] = {}
+                shared: Set[str] = set()
+                for index, row in enumerate(rows):
+                    if index % 1024 == 0:
+                        # Let the overall timeout/cancellation apply to Python
+                        # normalization too, not just the bounded SQL query.
+                        await asyncio.sleep(0)
+                    ip = torrent_destination_ip(row["destination"])
+                    if ip is None:
+                        continue
+                    owner = str(row["user_uuid"])
+                    if ip in owners and owners[ip] != owner:
+                        shared.add(ip)
+                    else:
+                        owners[ip] = owner
+                return shared
         except Exception as e:
-            logger.warning("count_recent_torrent_peers failed: %s", e)
-            return 0
+            logger.warning("Torrent shared-IP evidence deferred: %s", type(e).__name__)
+            return None
 
     async def shared_torrent_destinations(
-        self, destinations: list, hours: int = 24,
+        self, destinations: list, hours: int = 24, *, fail_closed: bool = False,
     ) -> set:
-        """Адреса из списка, за которыми в окне стоял не один пользователь.
+        """Map shared canonical IPs back to the caller's original endpoints.
 
-        Вердикт nDPI живёт на адресе назначения: за адресом мессенджера или
-        CDN сидит пол-ноды, и один поток сделал бы нарушителями всех, кто
-        туда ходил. Обвинять по такому адресу нельзя — привязка недоказуема.
+        Ports, IPv6 formatting and IPv4-mapped IPv6 do not separate users of
+        the same peer. ``fail_closed`` keeps the legacy read-only caller
+        behavior while evidence callers can reject an indeterminate snapshot.
         """
-        if not self.is_connected or not destinations:
+        targets = {str(d) for d in destinations if d}
+        if not targets:
             return set()
-        try:
-            async with self.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT destination
-                    FROM torrent_events
-                    WHERE destination = ANY($1::text[])
-                      AND detected_at > NOW() - make_interval(hours => $2)
-                    GROUP BY destination
-                    HAVING count(DISTINCT user_uuid) > 1
-                    """,
-                    list({str(d) for d in destinations if d}), hours,
-                )
-            return {r["destination"] for r in rows}
-        except Exception as e:
-            logger.warning("shared_torrent_destinations failed: %s", e)
-            return set()
+        shared = await self.get_recent_shared_torrent_ips(hours)
+        if shared is None:
+            return targets if fail_closed else set()
+        return {destination for destination in targets
+                if torrent_destination_ip(destination) in shared}
 
     async def get_recent_torrent_violation(self, user_uuid: str, minutes: int = 10):
         """Check if a torrent-type violation exists for this user within the last N minutes."""

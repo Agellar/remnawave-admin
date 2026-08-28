@@ -7,6 +7,7 @@ Endpoint: POST /batch
 import asyncio
 import hashlib
 import hmac as hmac_mod
+import ipaddress
 import json
 import logging
 import os
@@ -20,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from shared.database import db_service
+from shared.db.connections import torrent_destination_ip
 from shared.db_schema import NODES_TABLE
 from web.backend.core import torrent_p2p_whitelist
 from shared.db_query import select_sql
@@ -248,7 +250,20 @@ def _is_own_service(destination: str, infra_ips: frozenset) -> bool:
     торрент-порту за ней — настоящий обмен, а не туннель между серверами.
     """
     host, port = _split_destination(destination)
-    return host in infra_ips and port in _INFRA_PORTS
+    canonical = torrent_destination_ip(destination)
+    if canonical is not None:
+        host = canonical
+        port = int(destination.rsplit(":", 1)[1])
+    normalized_infra = set()
+    for value in infra_ips:
+        try:
+            address = ipaddress.ip_address(str(value).strip("[]"))
+            if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            normalized_infra.add(str(address))
+        except ValueError:
+            normalized_infra.add(value)
+    return host in normalized_infra and port in _INFRA_PORTS
 
 
 router = APIRouter()
@@ -744,35 +759,61 @@ async def receive_connections(
     )
 
 
+async def _eligible_torrent_window(
+    counts: Optional[dict[str, int]], shared_ips: set[str],
+) -> dict[str, int]:
+    """One filtered, bounded evidence window for both torrent thresholds.
+
+    Raw history intentionally retains suppressed events for diagnosis, so a
+    raw COUNT cannot be used as evidence. Allowed/shared endpoints must not
+    help an unrelated single event reach the event or swarm threshold.
+    """
+    if not counts:
+        return {}
+
+    infra_ips = await _own_infrastructure_ips()
+    destinations = [
+        destination for destination in counts
+        if torrent_destination_ip(destination) is not None
+        and torrent_destination_ip(destination) not in shared_ips
+        and not _is_own_service(destination, infra_ips)
+    ]
+    if not destinations:
+        return {}
+
+    destinations = await torrent_p2p_whitelist.filter_destinations(destinations)
+    return {destination: counts[destination] for destination in destinations}
+
+
 async def _process_torrent_violations(
     events: list[TorrentEventReport],
     user_uuid_cache: dict[str, Optional[str]],
 ):
     """Background: create violations and send notifications for torrent events."""
     try:
-        # Вердикт nDPI висит на адресе назначения, а не на человеке. Если по
-        # тому же адресу события есть и у других — за ним стоит не один
-        # пользователь (мессенджер, CDN, публичный резолвер), и обвинять
-        # некого. Проверка тут, а не в агенте: на нодах он обновляется не в
-        # один день, а защита нужна всем сразу.
-        shared = await db_service.shared_torrent_destinations(
-            [event.destination for event in events]
-        )
-        if shared:
-            events = [event for event in events if event.destination not in shared]
-            logger.info(
-                "Torrent violations: %d destination(s) shared by several users, skipped",
-                len(shared),
-            )
-            if not events:
-                return
-
         # Group events by user
         events_by_user: dict[str, list[TorrentEventReport]] = {}
         for event in events:
             user_uuid = user_uuid_cache.get(event.user_email)
             if user_uuid:
                 events_by_user.setdefault(user_uuid, []).append(event)
+
+        # Read per-user evidence first, then one fresh shared-IP snapshot for
+        # the entire batch. It must include rows used by the earlier counts;
+        # a negative cache or a snapshot taken before those counts would race
+        # concurrent collector batches and miss newly shared addresses.
+        windows = {
+            user_uuid: await db_service.get_recent_torrent_destination_counts(
+                user_uuid, minutes=_TORRENT_EVENT_WINDOW_MINUTES,
+            )
+            for user_uuid in events_by_user
+        }
+        if not any(windows.values()):
+            return
+        shared_ips = await db_service.get_recent_shared_torrent_ips()
+        if shared_ips is None:
+            logger.warning("Torrent batch decisions deferred: shared-IP evidence is incomplete")
+            return
 
         auto_action = config_service.get("torrent_auto_action", "notify")
         try:
@@ -792,35 +833,22 @@ async def _process_torrent_violations(
                     logger.debug("User %s is whitelisted for torrent, skipping", user_uuid)
                     continue
 
-                # Одиночное срабатывание — это шум: настоящий обмен даёт сотни
-                # событий за минуты. Считаем накопленное по базе, а не по
-                # батчу: рой приезжает кусками, и в отдельном куске событий
-                # может быть немного.
-                if min_events > 1:
-                    recent = await db_service.count_recent_torrent_events(
-                        user_uuid, minutes=_TORRENT_EVENT_WINDOW_MINUTES,
+                # Оба порога считаются по одному отфильтрованному окну, а
+                # не по сырой истории. Несколько портов одного IP — один пир.
+                eligible = await _eligible_torrent_window(windows[user_uuid], shared_ips)
+                user_events = [event for event in user_events if event.destination in eligible]
+                if not user_events:
+                    continue
+                recent = sum(eligible.values())
+                peers = len({torrent_destination_ip(destination) for destination in eligible})
+                if recent < max(1, min_events) or peers < max(1, min_peers):
+                    logger.info(
+                        "Torrent: eligible events=%d peers=%d for %s in %d min — "
+                        "below thresholds events=%d peers=%d",
+                        recent, peers, user_uuid[:8], _TORRENT_EVENT_WINDOW_MINUTES,
+                        min_events, min_peers,
                     )
-                    if recent < min_events:
-                        logger.info(
-                            "Torrent: %d event(s) for %s in %d min — below threshold %d",
-                            recent, user_uuid[:8], _TORRENT_EVENT_WINDOW_MINUTES, min_events,
-                        )
-                        continue
-
-                # Событий может набить и одно долгое соединение — рой это не
-                # доказывает. У обмена десятки пиров сразу; у ложного
-                # срабатывания адрес один и тот же (ловился антивирус,
-                # которому эвристика приписала шифрованный BitTorrent).
-                if min_peers > 1:
-                    peers = await db_service.count_recent_torrent_peers(
-                        user_uuid, minutes=_TORRENT_EVENT_WINDOW_MINUTES,
-                    )
-                    if peers < min_peers:
-                        logger.info(
-                            "Torrent: %d peer(s) for %s in %d min — below threshold %d",
-                            peers, user_uuid[:8], _TORRENT_EVENT_WINDOW_MINUTES, min_peers,
-                        )
-                        continue
+                    continue
 
                 # Dedup: skip if torrent violation exists within last 10 min
                 existing = await db_service.get_recent_torrent_violation(user_uuid, minutes=10)
@@ -833,18 +861,11 @@ async def _process_torrent_violations(
                 telegram_id = user_info.get("telegramId") if user_info else None
 
                 destinations = list(set(e.destination for e in user_events))
-                # Игровые лаунчеры раздают обновления настоящим BitTorrent, и
-                # вердикт по ним верный — отличается только адресат. Отсев
-                # идёт здесь, на последнем шаге: резолвить ASN на каждое
-                # событие батча было бы дорого и незачем.
-                destinations = await torrent_p2p_whitelist.filter_destinations(destinations)
-                if not destinations:
-                    logger.info(
-                        "Torrent: у %s остались только адреса легального P2P — не нарушение",
-                        user_uuid[:8],
-                    )
-                    continue
                 ips = list(set(e.ip_address for e in user_events))
+                evidence_reason = (
+                    f"Evidence window: {recent} eligible events, {peers} distinct peer IPs "
+                    f"in {_TORRENT_EVENT_WINDOW_MINUTES} min"
+                )
 
                 # Save as violation (score=100)
                 violation_id, violation_created = await db_service.save_violation(
@@ -858,6 +879,7 @@ async def _process_torrent_violations(
                     ip_addresses=ips,
                     reasons=[
                         f"Torrent traffic detected ({len(user_events)} events)",
+                        evidence_reason,
                         *[f"Destination: {d}" for d in destinations[:5]],
                     ],
                     simultaneous_connections=len(ips),
@@ -875,7 +897,7 @@ async def _process_torrent_violations(
                     "username": username,
                     "score": 100.0,
                     "recommended_action": "hard_block",
-                    "reasons": [f"Torrent traffic detected ({len(user_events)} events)"],
+                    "reasons": [f"Torrent traffic detected ({len(user_events)} events)", evidence_reason],
                     "ip_addresses": ips,
                     "source": "torrent",
                 })

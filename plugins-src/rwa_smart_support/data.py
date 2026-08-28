@@ -514,6 +514,54 @@ async def throttle_section(db, user_uuid: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def violation_recap_days() -> int:
+    """Use the panel's 4.6.3 history window without trusting malformed config."""
+    from shared.config_service import config_service
+
+    raw = config_service.get("violation_recap_days", 30)
+    try:
+        days = int(raw) if not isinstance(raw, bool) else 0
+    except (TypeError, ValueError, OverflowError):
+        return 30
+    # A broken setting must not turn a single support report into an
+    # unbounded history scan. Report the effective window to the caller.
+    return days if 1 <= days <= 365 else 30
+
+
+async def violations_recap_section(db, user_uuid: str) -> Dict[str, Any]:
+    """Count the complete window, separately from the bounded history sample.
+
+    Match upstream's ``total`` / ``annulled`` semantics: total excludes
+    annulled detector mistakes but still includes resolved history. Neither
+    number is proof of a current restriction or of customer abuse.
+    """
+    days = violation_recap_days()
+    row = await db.fetchrow(
+        """SELECT COUNT(*) FILTER (
+                      WHERE action_taken IS DISTINCT FROM 'annulled') AS total,
+                  COUNT(*) FILTER (
+                      WHERE COALESCE(action_taken, '') = '') AS unresolved,
+                  COUNT(*) FILTER (
+                      WHERE COALESCE(action_taken, '') NOT IN ('', 'annulled')) AS resolved,
+                  COUNT(*) FILTER (
+                      WHERE action_taken = 'annulled') AS annulled,
+                  MAX(detected_at) FILTER (
+                      WHERE action_taken IS DISTINCT FROM 'annulled') AS last_at
+             FROM violations
+            WHERE user_uuid = $1::uuid
+              AND detected_at > NOW() - make_interval(days => $2)""",
+        user_uuid, days,
+    )
+    return {
+        "window_days": days,
+        "total": int(row["total"] or 0) if row else 0,
+        "unresolved": int(row["unresolved"] or 0) if row else 0,
+        "resolved": int(row["resolved"] or 0) if row else 0,
+        "annulled": int(row["annulled"] or 0) if row else 0,
+        "last_at": row["last_at"] if row else None,
+    }
+
+
 async def violations_section(db, user_uuid: str, days: int = 14) -> List[Dict[str, Any]]:
     rows = await db.fetch(
         """SELECT id, detected_at, score, confidence, reasons, recommended_action,

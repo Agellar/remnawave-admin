@@ -299,8 +299,10 @@ async def analysis_for_alert(db, alert_id: int) -> dict | None:
 
 
 async def analysis_context(db, alert: dict, *, sample_limit: int = 12) -> dict:
+    from shared.agent_version import LATEST_AGENT_VERSION
+
     samples = await db.fetch(
-        """SELECT online, total_online, share, node_alive, sampled_at
+        """SELECT online, total_online, share, node_alive, agent_version, sampled_at
              FROM local_block_radar_samples
             WHERE node_uuid=$1::uuid
             ORDER BY sampled_at DESC LIMIT $2""",
@@ -309,11 +311,12 @@ async def analysis_context(db, alert: dict, *, sample_limit: int = 12) -> dict:
     latest_nodes = await db.fetch(
         """SELECT DISTINCT ON (node_uuid)
                   node_name, provider_name, transport, online, total_online,
-                  share, node_alive, sampled_at
+                  share, node_alive, agent_version, sampled_at
              FROM local_block_radar_samples
             ORDER BY node_uuid, sampled_at DESC"""
     )
     return {
+        "reference_agent_version": LATEST_AGENT_VERSION,
         "alert": {
             "id": int(alert["id"]),
             "node_name": alert["node_name"],
@@ -333,6 +336,7 @@ async def analysis_context(db, alert: dict, *, sample_limit: int = 12) -> dict:
                 "total_online": int(row["total_online"]),
                 "share": round(float(row["share"]), 6),
                 "node_alive": bool(row["node_alive"]),
+                "agent_version": row["agent_version"] or "unknown",
                 "sampled_at": row["sampled_at"],
             }
             for row in samples
@@ -346,6 +350,7 @@ async def analysis_context(db, alert: dict, *, sample_limit: int = 12) -> dict:
                 "total_online": int(row["total_online"]),
                 "share": round(float(row["share"]), 6),
                 "node_alive": bool(row["node_alive"]),
+                "agent_version": row["agent_version"] or "unknown",
                 "sampled_at": row["sampled_at"],
             }
             for row in latest_nodes

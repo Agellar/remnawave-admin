@@ -269,22 +269,36 @@ async def events(db, incident_id: int, limit: int = 100) -> list[dict[str, Any]]
 
 
 async def active_for_nodes(db, node_uuids: Iterable[str]) -> list[dict[str, Any]]:
+    """Actionable evidence for support, excluding explicit detector mistakes.
+
+    A snooze only mutes the operator's queue; it does not establish recovery.
+    Only an explicit false-positive review removes this incident from the
+    downstream evidence set. The incident and its audit history remain intact.
+    """
     values = sorted({str(value) for value in node_uuids if value})
     if not values:
         return []
     rows = await db.fetch(
-        """SELECT * FROM plugin_incidents
-            WHERE status IN ('open', 'acknowledged')
-              AND (node_uuid = ANY($1::uuid[]) OR node_uuid IS NULL)
-            ORDER BY severity='critical' DESC, severity='high' DESC, updated_at DESC""",
+        """SELECT i.*, w.workflow_status, w.snoozed_until, w.assigned_to,
+                   w.review_label, w.review_note, w.updated_by
+              FROM plugin_incidents i
+         LEFT JOIN plugin_incident_workflow w ON w.incident_id=i.id
+             WHERE i.status IN ('open', 'acknowledged')
+               AND w.review_label IS DISTINCT FROM 'false_positive'
+               AND (i.node_uuid = ANY($1::uuid[]) OR i.node_uuid IS NULL)
+             ORDER BY i.severity='critical' DESC, i.severity='high' DESC, i.updated_at DESC""",
         values,
     )
     return [_public(row) for row in rows]
 
 
 async def active_node_uuids(db) -> set[str]:
+    """Nodes with actionable incidents, using the same review rule as support."""
     rows = await db.fetch(
-        """SELECT DISTINCT node_uuid FROM plugin_incidents
-            WHERE status IN ('open', 'acknowledged') AND node_uuid IS NOT NULL"""
+        """SELECT DISTINCT i.node_uuid FROM plugin_incidents i
+         LEFT JOIN plugin_incident_workflow w ON w.incident_id=i.id
+             WHERE i.status IN ('open', 'acknowledged')
+               AND w.review_label IS DISTINCT FROM 'false_positive'
+               AND i.node_uuid IS NOT NULL"""
     )
     return {str(row["node_uuid"]) for row in rows}

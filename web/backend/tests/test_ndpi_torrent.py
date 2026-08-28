@@ -375,7 +375,7 @@ def test_unknown_port_still_counts():
 
 def test_daemon_filters_traffic_it_would_discard_anyway():
     """То, что детектор выбросит по порту, незачем и разбирать."""
-    from src.collectors import ndpi_daemon
+    from remnawave_node_agent_src.collectors import ndpi_daemon
 
     for port in (80, 443, 8443, 5222):
         assert f"port {port}" in ndpi_daemon.BPF_FILTER
@@ -388,7 +388,7 @@ def test_daemon_caps_threads_and_tables():
     На двухъядерной ноде треды делят одну работу и съедают CPU, а таблицы
     растут весь uptime — именно это и выглядело как утечка.
     """
-    from src.collectors import ndpi_daemon
+    from remnawave_node_agent_src.collectors import ndpi_daemon
 
     assert ndpi_daemon.MAX_READER_THREADS < 10
     assert ndpi_daemon.TCP_IDLE_US < 7_440_000_000
@@ -398,7 +398,7 @@ def test_daemon_caps_threads_and_tables():
 @pytest.mark.asyncio
 async def test_daemon_passes_limits_to_ndpid(monkeypatch):
     """Ручки должны доехать до процесса, а не остаться константами."""
-    from src.collectors import ndpi_daemon
+    from remnawave_node_agent_src.collectors import ndpi_daemon
 
     captured: list[list[str]] = []
 
@@ -447,8 +447,8 @@ def test_game_launchers_and_antivirus_are_not_violations():
 
 
 @pytest.mark.asyncio
-async def test_whitelist_keeps_addresses_when_geoip_is_down(monkeypatch):
-    """Без геобазы фильтровать нечем — молча хоронить нарушение нельзя."""
+async def test_whitelist_does_not_accuse_when_geoip_is_down(monkeypatch):
+    """Без геобазы нельзя доказать, что событие не из разрешённого P2P."""
     from web.backend.core import torrent_p2p_whitelist
 
     def boom():
@@ -456,4 +456,4 @@ async def test_whitelist_keeps_addresses_when_geoip_is_down(monkeypatch):
 
     monkeypatch.setattr("shared.geoip.get_geoip_service", boom, raising=False)
     kept = await torrent_p2p_whitelist.filter_destinations(["203.0.113.9:51413"])
-    assert kept == ["203.0.113.9:51413"]
+    assert kept == []

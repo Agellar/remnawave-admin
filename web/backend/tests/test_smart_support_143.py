@@ -468,6 +468,10 @@ async def test_provider_cooldown_is_reported_without_upstream_details(monkeypatc
     monkeypatch.setattr(support_api.data, "client_section", AsyncMock(return_value={}))
     monkeypatch.setattr(support_api.data, "nodes_section", AsyncMock(return_value=[]))
     monkeypatch.setattr(support_api.data, "violations_section", AsyncMock(return_value=[]))
+    monkeypatch.setattr(support_api.data, "violations_recap_section", AsyncMock(return_value={
+        "window_days": 30, "total": 0, "unresolved": 0,
+        "resolved": 0, "annulled": 0, "last_at": None,
+    }))
     monkeypatch.setattr(support_api.store, "correlations_for_user", AsyncMock(return_value=[]))
     monkeypatch.setattr(support_api.store, "log_action", AsyncMock(return_value=1))
     monkeypatch.setattr(support_api.rules, "evaluate", MagicMock(return_value=[]))
@@ -660,6 +664,7 @@ def test_ai_context_treats_throttle_as_executed_administrative_measure():
         "score": 72,
         "recommended_action": "throttle",
         "action_taken": None,
+        "is_resolved": False,
     }
     assert "самовольно снять" in ai.SYSTEM_PROMPT_TEMPLATE
     assert "recommended_action" in ai.SYSTEM_PROMPT_TEMPLATE

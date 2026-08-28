@@ -12,20 +12,28 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from . import ai, probes as probes_mod, qcode, settings as settings_mod, store
+from shared.agent_version import LATEST_AGENT_VERSION
+
+from . import ai, qcode, store
+from . import probes as probes_mod
+from . import settings as settings_mod
 
 RBAC_RESOURCES = {"block_radar": ["view", "settings", "edit"]}
 _VERDICTS = {"confirmed", "false_positive"}
-MIN_COMPATIBLE_AGENT_VERSION = "1.7.3"
 
 
 def _version_tuple(value: Any) -> tuple[int, int, int] | None:
-    match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)", str(value or ""))
+    # A prerelease or malformed report is not proof that the stable agent's
+    # filters are present. Local build metadata does not change compatibility.
+    text = str(value or "").strip()
+    if len(text) > 128:
+        return None
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?", text)
     return tuple(int(part) for part in match.groups()) if match else None
 
 
 def _agent_compatibility(rows: list[Any]) -> dict[str, Any]:
-    minimum = _version_tuple(MIN_COMPATIBLE_AGENT_VERSION)
+    minimum = _version_tuple(LATEST_AGENT_VERSION)
     incompatible: list[dict[str, str]] = []
     unknown: list[str] = []
     compatible = 0
@@ -41,7 +49,9 @@ def _agent_compatibility(rows: list[Any]) -> dict[str, Any]:
         else:
             compatible += 1
     return {
-        "minimum_version": MIN_COMPATIBLE_AGENT_VERSION,
+        # Follow the panel's official agent reference at every release. This
+        # warning is informational: Globalping checks stay independent of it.
+        "minimum_version": LATEST_AGENT_VERSION,
         "total": len(rows),
         "compatible": compatible,
         "incompatible": incompatible,

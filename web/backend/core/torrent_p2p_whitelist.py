@@ -12,13 +12,17 @@ Kaspersky, которому приписали BitTorrent.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Iterable
+
+from shared.db.connections import torrent_destination_ip
 
 logger = logging.getLogger(__name__)
 
 #: Ключ настройки со списком маркеров (подстроки имени организации, через запятую).
 SETTING_KEY = "torrent_asn_whitelist"
+_LOOKUP_TIMEOUT_SECONDS = 10.0
 
 #: Кто раздаёт обновления по P2P или ловится эвристикой на шифрованном
 #: потоке. Сравнение по вхождению и без регистра: имена организаций в базах
@@ -38,12 +42,14 @@ def markers() -> tuple[str, ...]:
     except Exception:
         logger.debug("torrent whitelist: настройка недоступна", exc_info=True)
         raw = ""
+    if not isinstance(raw, str):
+        raw = ""
     custom = tuple(part.strip().lower() for part in raw.split(",") if part.strip())
     return custom or DEFAULT_MARKERS
 
 
 def is_whitelisted_org(asn_org: str | None) -> bool:
-    if not asn_org:
+    if not isinstance(asn_org, str) or not asn_org.strip():
         return False
     org = asn_org.lower()
     return any(marker in org for marker in markers())
@@ -53,32 +59,36 @@ async def filter_destinations(destinations: Iterable[str]) -> list[str]:
     """Оставить адреса, которые НЕ принадлежат легальным P2P-раздачам.
 
     Адрес приходит как ``ip:port`` — в том же виде, в каком его пишет Xray.
-    Резолв идёт только здесь, на последнем шаге перед нарушением: гонять
-    geoip на каждое событие батча было бы дорого и незачем.
+    Резолв идёт по сгруппированным адресам окна, а не по каждому событию.
+    Неизвестный владелец и недоступная геобаза не доказывают нарушение:
+    событие остаётся в сырой истории, но не наполняет пороги обвинения.
     """
     targets = [str(d) for d in destinations if d]
     if not targets:
         return []
 
-    by_ip = {d: d.rsplit(":", 1)[0].strip("[]") for d in targets}
+    by_ip = {d: ip for d in targets if (ip := torrent_destination_ip(d)) is not None}
+    if not by_ip:
+        return []
     try:
         from shared.geoip import get_geoip_service
 
-        found = await get_geoip_service().lookup_batch(list(set(by_ip.values())))
-    except Exception:
-        # Без геобазы отсеивать нечем: пропускаем всё дальше, а не хороним
-        # нарушение молча — ложный пропуск дешевле ложного обвинения только
-        # тогда, когда мы знаем, кого пропускаем.
-        logger.warning("torrent whitelist: geoip недоступен, фильтр пропущен", exc_info=True)
-        return targets
+        found = await asyncio.wait_for(
+            get_geoip_service().lookup_batch(list(set(by_ip.values()))),
+            timeout=_LOOKUP_TIMEOUT_SECONDS,
+        )
+    except Exception as error:
+        logger.warning("torrent whitelist: обвинение отложено (%s)", type(error).__name__)
+        return []
 
     kept: list[str] = []
     for destination, ip in by_ip.items():
         info = found.get(ip)
         asn_org = getattr(info, "asn_org", None) if info else None
+        if not isinstance(asn_org, str) or not asn_org.strip():
+            continue
         if is_whitelisted_org(asn_org):
-            logger.info("Torrent: адрес %s принадлежит %s — легальный P2P, пропускаем",
-                        destination, asn_org)
+            logger.info("Torrent: разрешённый P2P исключён из доказательного окна")
             continue
         kept.append(destination)
     return kept

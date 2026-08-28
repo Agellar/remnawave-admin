@@ -103,8 +103,10 @@ SYSTEM_PROMPT_TEMPLATE = (
     "нарушителей. Несколько устройств, две и более страны, роуминг, CGNAT, "
     "смена ASN и необычное время подключения сами по себе нормальны и не "
     "доказывают передачу подписки или злоупотребление.\n"
-    "6. Учитывай только активные, не аннулированные нарушения из "
-    "violations_recent и никогда не предлагай блокировку, отключение, отзыв "
+    "6. violations_recent — выборка истории, а не список доказанных текущих "
+    "нарушений. Записи с is_resolved=true — закрытая история; они не доказывают "
+    "текущую проблему. Аннулированные срабатывания исключены из этой выборки. "
+    "Никогда не предлагай блокировку, отключение, отзыв "
     "подписки или иное наказание.\n"
     "7. provider_outage, если он есть, — подтверждённый внешний сигнал сбоя "
     "сети провайдера клиента; учитывай его первым, но не расширяй выводы за "
@@ -117,7 +119,15 @@ SYSTEM_PROMPT_TEMPLATE = (
     "активна, если это относится к жалобе.\n"
     "10. В violations_recent строго различай recommended_action (рекомендация) "
     "и action_taken (реально выполненное действие). Не утверждай, что мера "
-    "применена, если заполнена только рекомендация.\n\n"
+    "применена, если заполнена только рекомендация. Историческое action_taken "
+    "тоже не доказывает, что ограничение действует сейчас: текущее состояние "
+    "смотри в user и administrative_throttle.\n"
+    "11. violations_recap — полный счёт за window_days: total не включает "
+    "annulled, но включает resolved. annulled — ошибки детектора, а не рецидив. "
+    "unresolved — ещё не разобранные сигналы, а не подтверждённое злоупотребление. "
+    "violations_sample — ограниченная выборка за другой период, её размер "
+    "нельзя выдавать за полный счёт. Ни повторяемость, ни высокий score сами "
+    "по себе не объясняют недоступность сервиса.\n\n"
     "{reply_rules}\n\n"
     "Ответь СТРОГО одним JSON-объектом без markdown-обёртки:\n"
     '{{"summary": "2-4 предложения: что происходит с юзером", '
@@ -221,6 +231,21 @@ def build_context(report: Dict[str, Any]) -> Dict[str, Any]:
             "until": throttle.get("until"),
         }
 
+    # Defend the AI boundary as well as the SQL query: old/cached reports may
+    # contain annulled records, and a historical action is not a current one.
+    recent = [
+        item for item in report.get("violations_recent", [])
+        if isinstance(item, dict)
+        and str(item.get("action_taken") or "").strip().lower() != "annulled"
+    ]
+    recap = report.get("violations_recap")
+    safe_recap = None
+    if isinstance(recap, dict):
+        safe_recap = {
+            key: recap.get(key)
+            for key in ("window_days", "total", "unresolved", "resolved", "annulled")
+        }
+
     return {
         "user": {
             "status": user.get("status"),
@@ -267,15 +292,21 @@ def build_context(report: Dict[str, Any]) -> Dict[str, Any]:
         ],
         "provider_outage": safe_outage,
         "administrative_throttle": safe_throttle,
-        "violations_14d": len(report.get("violations_recent", [])),
+        "violations_recap": safe_recap,
+        "violations_sample": {
+            "window_days": 14,
+            "limit": 10,
+            "returned": min(len(recent), 10),
+            "is_complete_count": False,
+        },
         "violations_recent": [
             {
                 "score": item.get("score"),
                 "recommended_action": item.get("recommended_action", item.get("action")),
                 "action_taken": item.get("action_taken"),
+                "is_resolved": bool(item.get("action_taken")),
             }
-            for item in report.get("violations_recent", [])[:10]
-            if isinstance(item, dict)
+            for item in recent[:10]
         ],
         "engine_hypotheses": [
             {"rule_id": h["rule_id"], "title": h["title"], "confidence": h["confidence"]}

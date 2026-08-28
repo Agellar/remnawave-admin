@@ -113,18 +113,27 @@ def _in_bedolaga_window(user: Dict[str, Any], th: Dict[str, float]) -> bool:
     return False
 
 
-async def _incident_affected_users(db, safety: Dict[str, Any]) -> set[str]:
+async def _incident_affected_users(
+    db, safety: Dict[str, Any], user_uuids: Iterable[str]
+) -> set[str]:
     if not safety.get("suppress_active_incidents"):
         return set()
+    values = sorted({str(value) for value in user_uuids if value})
+    if not values:
+        return set()
+    # Incident Center omits explicitly reviewed false positives. Do not use
+    # policy-violation history (including annulled signals) as outage evidence.
     nodes = await active_node_uuids(db)
     if not nodes:
         return set()
     rows = await db.fetch(
         """SELECT DISTINCT user_uuid FROM user_connections
             WHERE node_uuid=ANY($1::uuid[])
-              AND connected_at >= NOW()-make_interval(mins => $2)""",
+              AND connected_at >= NOW()-make_interval(mins => $2)
+              AND user_uuid=ANY($3::uuid[])""",
         sorted(nodes),
         int(safety["incident_lookback_minutes"]),
+        values,
     )
     return {str(row["user_uuid"]) for row in rows}
 
@@ -173,7 +182,9 @@ async def recipients(
     limit = int(th["max_recipients_per_campaign"])
 
     recent = await store.recently_messaged(db, cooldown_days)
-    affected = await _incident_affected_users(db, safety or {}) if safety else set()
+    affected = await _incident_affected_users(
+        db, safety or {}, (user["uuid"] for user in everyone)
+    ) if safety else set()
     throttled = await _active_throttled_users(db, (user["uuid"] for user in everyone))
     skipped = {
         "no_telegram": 0,

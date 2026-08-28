@@ -83,7 +83,7 @@ def _recap_days() -> int:
     from shared.config_service import config_service
 
     try:
-        return int(config_service.get("violation_recap_days", 30) or 30)
+        return max(1, min(365, int(config_service.get("violation_recap_days", 30) or 30)))
     except (TypeError, ValueError):
         return 30
 
@@ -672,65 +672,12 @@ async def get_user_timeline(
     if visible is not None and user_uuid.lower() not in visible:
         raise api_error(403, E.FORBIDDEN)
 
-    events: list[dict] = []
-
-    # нарушения
-    for v in await db.get_user_violations(user_uuid=user_uuid, days=days):
-        ts = v.get('detected_at')
-        score = float(v.get('score', 0) or 0)
-        events.append({
-            'type': 'violation',
-            'ts': ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
-            'id': v.get('id'),
-            'score': score,
-            'severity': get_severity(score),
-            'action': v.get('recommended_action') or v.get('action_taken'),
-            'reasons': v.get('reasons') or [],
-        })
-
-    # сессии подключений
+    from web.backend.core.user_timeline import user_timeline_page
     try:
-        for c in await db.get_user_connection_history(user_uuid, days=days, limit=300):
-            dev = c.get('device_info') or {}
-            events.append({
-                'type': 'connection',
-                'ts': c.get('connected_at'),
-                'ip': c.get('ip_address'),
-                'node_name': c.get('node_name'),
-                'disconnected_at': c.get('disconnected_at'),
-                'platform': (dev.get('platform') if isinstance(dev, dict) else None),
-                'user_agent': (dev.get('userAgent') or dev.get('user_agent') if isinstance(dev, dict) else None),
-            })
-    except Exception as e:
-        logger.warning("timeline connections failed for %s: %s", user_uuid, e)
-
-    # HWID-устройства (первое появление)
-    try:
-        for d in await db.get_user_hwid_devices(user_uuid):
-            ts = d.get('created_at')
-            events.append({
-                'type': 'hwid',
-                'ts': ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
-                'hwid': d.get('hwid'),
-                'platform': d.get('platform'),
-                'device_model': d.get('device_model'),
-                'app_version': d.get('app_version'),
-            })
-    except Exception as e:
-        logger.warning("timeline hwid failed for %s: %s", user_uuid, e)
-
-    # сортировка по времени (свежие сверху); пустые ts — в конец
-    events.sort(key=lambda e: e.get('ts') or '', reverse=True)
-
-    total = len(events)
-    start = (page - 1) * per_page
-    return {
-        'items': events[start:start + per_page],
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-        'pages': max(1, (total + per_page - 1) // per_page),
-    }
+        return await user_timeline_page(db, user_uuid, days, page, per_page)
+    except Exception as exc:
+        logger.warning("timeline unavailable: %s", type(exc).__name__)
+        raise api_error(503, E.API_SERVICE_UNAVAILABLE) from exc
 
 
 @router.get("/export/csv")

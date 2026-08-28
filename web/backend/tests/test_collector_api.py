@@ -811,7 +811,10 @@ class TestSharedDestinations:
 
     @pytest.mark.asyncio
     async def test_returns_addresses_with_several_users(self):
-        db = self._db([{"destination": "57.144.105.33:443"}])
+        db = self._db([
+            {"destination": "57.144.105.33:443", "user_uuid": "user-a", "window_rows": 2},
+            {"destination": "[::ffff:57.144.105.33]:8443", "user_uuid": "user-b", "window_rows": 2},
+        ])
         shared = await db.shared_torrent_destinations(
             ["57.144.105.33:443", "198.51.100.9:6881"]
         )
