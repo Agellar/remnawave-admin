@@ -4,13 +4,13 @@ services:
   # Bot disabled for now: server blocks most Telegram IPs (IPv6 dead).
   # Re-enable after setting up WARP/proxy egress.
   bot:
-    image: agellar/remnawave-admin-bot:sha256-08b680d020a03767ee553a955d137591f905280d80260d6ea0a8d83bdfb55b43
+    image: agellar/remnawave-admin-bot:sha256-a2659e7ccbdbb173e95a45e81cb5c5f9831d6692d7a75b503958b277958b35bc
     deploy:
       replicas: 0
     ports: !reset []
 
   web-backend:
-    image: agellar/remnawave-admin-web-backend:sha256-cfca937ec934b2c3f4e233242d63a43289309e15d4bf2234bdba15dc3f2e7c35
+    image: agellar/remnawave-admin-web-backend:sha256-d5de1b72109a2967710d5f4bdcbd7d8f50c1d4f1b06bfd366dd8486b60822fee
     ports: !reset []
     depends_on:
       bedolaga-tunnel:
@@ -20,10 +20,10 @@ services:
       RWA_LIVE_FLOW_USERS_PAGE: "500"
 
   web-collector:
-    image: agellar/remnawave-admin-web-backend:sha256-cfca937ec934b2c3f4e233242d63a43289309e15d4bf2234bdba15dc3f2e7c35
+    image: agellar/remnawave-admin-web-backend:sha256-d5de1b72109a2967710d5f4bdcbd7d8f50c1d4f1b06bfd366dd8486b60822fee
 
   web-frontend:
-    image: agellar/remnawave-admin-web-frontend:sha256-ed603809005d2f8e38e37968e25c497a350d4c0fe74c24490050e1e4d1509bb9
+    image: agellar/remnawave-admin-web-frontend:sha256-e50aae68b3516a777bb4b71cae0d4a8c8e02a00c25d3b6fa209fc0eb08eb0c29
     ports: !reset []
 
   # Приватный канал к Bedolaga Bot Web API на 193.53.40.18.
