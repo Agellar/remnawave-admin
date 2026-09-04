@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import httpx
@@ -25,7 +25,7 @@ from shared.db.connections import torrent_destination_ip
 from shared.db_schema import NODES_TABLE
 from web.backend.core import torrent_p2p_whitelist
 from shared.db_query import select_sql
-from shared.connection_monitor import ConnectionMonitor
+from shared.connection_monitor import ActiveConnection, ConnectionMonitor
 from shared.violation_detector import IntelligentViolationDetector
 from shared.agent_tokens import get_node_by_token
 from shared.config_service import config_service
@@ -65,6 +65,68 @@ CONNECTIONS_RETENTION_DAYS = 30
 
 # Semaphore: limit concurrent background violation detection batches
 _violation_semaphore = asyncio.Semaphore(3)
+
+# ── Карта активности ──────────────────────────────────────
+# Кто с какого адреса подавал признаки жизни: {user_uuid: {ip: [первый раз,
+# последний раз, нода]}}. Детектор считает одновременность по ней, а не по
+# стартам строк в базе: connected_at там не обновляется, и люди, сидящие
+# часами, по стартам в одно окно не попадали. В базу карта не пишется —
+# это была бы та самая ежецикловая перезапись, от которой мы ушли.
+_activity: dict[str, dict[str, list]] = {}
+_ACTIVITY_WINDOW_MINUTES = 5    # без новых записей в логе дольше — соединение не живое
+_ACTIVITY_TTL_MINUTES = 30      # дольше — адрес выбрасывается из карты
+_ACTIVITY_SWEEP_SECONDS = 300
+_last_activity_sweep: datetime = datetime.min
+
+
+def _as_naive_utc(value) -> Optional[datetime]:
+    if not isinstance(value, datetime):
+        return None
+    return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+
+
+def _note_activity(batch: list) -> None:
+    """Отметить адреса батча живыми; первое появление остаётся стартом."""
+    for c in batch:
+        seen = _as_naive_utc(c.get("connected_at")) or datetime.utcnow()
+        ips = _activity.setdefault(str(c["user_uuid"]), {})
+        rec = ips.get(c["ip_address"])
+        if rec is None:
+            ips[c["ip_address"]] = [seen, seen, c.get("node_uuid")]
+        else:
+            rec[1] = max(rec[1], seen)
+            rec[2] = c.get("node_uuid") or rec[2]
+
+
+def _live_connections(user_uuids) -> Dict[str, list]:
+    """Живые соединения пользователей: активность в пределах окна."""
+    horizon = datetime.utcnow() - timedelta(minutes=_ACTIVITY_WINDOW_MINUTES)
+    return {
+        uid: [
+            ActiveConnection(
+                connection_id=0, user_uuid=uid, ip_address=ip, node_uuid=node,
+                connected_at=first, last_seen_at=last,
+            )
+            for ip, (first, last, node) in _activity.get(uid, {}).items()
+            if last >= horizon
+        ]
+        for uid in user_uuids
+    }
+
+
+def _sweep_activity(now: datetime) -> None:
+    """Выбросить адреса, о которых давно не слышно, чтобы карта не росла без потолка."""
+    global _last_activity_sweep
+    if (now - _last_activity_sweep).total_seconds() < _ACTIVITY_SWEEP_SECONDS:
+        return
+    _last_activity_sweep = now
+    horizon = now - timedelta(minutes=_ACTIVITY_TTL_MINUTES)
+    for uid in list(_activity):
+        ips = _activity[uid]
+        for ip in [ip for ip, rec in ips.items() if rec[1] < horizon]:
+            del ips[ip]
+        if not ips:
+            del _activity[uid]
 
 # ── Violation detection queue ──────────────────────────────
 # Instead of spawning a task per batch, accumulate user UUIDs in a set
@@ -561,7 +623,8 @@ async def receive_connections(
     if (now - _last_metrics_cleanup).total_seconds() > CLEANUP_INTERVAL_HOURS * 3600:
         _last_metrics_cleanup = now
         try:
-            deleted = await db_service.cleanup_old_metrics_snapshots(METRICS_RETENTION_DAYS)
+            m_days = int(config_service.get("metrics_retention_days", METRICS_RETENTION_DAYS) or METRICS_RETENTION_DAYS)
+            deleted = await db_service.cleanup_old_metrics_snapshots(m_days)
             if deleted > 0:
                 logger.info("Cleaned up %d old metrics snapshots", deleted)
         except Exception as e:
@@ -653,24 +716,28 @@ async def receive_connections(
                 "user_uuid": user_uuid,
                 "ip_address": conn.ip_address,
                 "node_uuid": conn.node_uuid,
+                # Только то, что читается: транспорт для карточки юзера и
+                # block-radar. Время есть в колонках, а байты агент не считает
+                # (в access.log их нет) — эти дубли лишь заставляли переписывать
+                # строку каждый цикл.
                 "device_info": {
                     "user_email": conn.user_email,
                     "inbound_tag": conn.inbound_tag or None,
-                    "bytes_sent": conn.bytes_sent,
-                    "bytes_received": conn.bytes_received,
-                    "connected_at": conn.connected_at.isoformat() if conn.connected_at else None,
-                    "disconnected_at": conn.disconnected_at.isoformat() if conn.disconnected_at else None,
                 },
                 "connected_at": conn.connected_at,
             })
 
         if batch_connections:
+            _note_activity(batch_connections)
             for attempt in range(3):
                 try:
                     result = await db_service.batch_upsert_connections(
                         batch_connections, stale_threshold_minutes=2
                     )
-                    processed = result["upserted"]
+                    # Принятые соединения, а не записанные строки: база
+                    # переписывает строку только при изменениях, а детектору
+                    # нужен каждый батч, где пользователь был замечен
+                    processed = len(batch_connections)
                     logger.info("Batch upserted      node=%-20s  upserted=%-4d  stale=%-3d  errors=%d", node_name, result["upserted"], result["closed_stale"], errors)
                     break
                 except Exception as e:
@@ -987,6 +1054,7 @@ async def _run_violation_detection(affected_user_uuids: set):
         if expired_keys:
             logger.debug("Cooldown cleanup: removed %d expired entries, %d remaining",
                          len(expired_keys), len(_violation_check_cooldown))
+        _sweep_activity(now_cleanup)
 
         # Adaptive cooldown based on total tracked users
         total_tracked = len(_violation_check_cooldown) + len(affected_user_uuids)
@@ -1035,6 +1103,7 @@ async def _run_violation_detection(affected_user_uuids: set):
             remaining,
             window_minutes=60,
             excluded_analyzers_map=excluded_map,
+            live_connections=_live_connections(remaining),
         )
 
         # Post-processing: handle violations and update cooldowns
@@ -1648,6 +1717,7 @@ async def collector_webhook(request: Request):
     logger.info("Webhook received: %s", event)
 
     # 1. Sync to DB (collector owns sync)
+    sync_result = None
     try:
         from shared.sync import sync_service
         sync_result = await sync_service.handle_webhook_event(event, event_data)
@@ -1655,6 +1725,22 @@ async def collector_webhook(request: Request):
             await _notify_hwid_reuse(sync_result or {})
     except Exception as e:
         logger.warning("Webhook sync failed for %s: %s", event, e)
+
+    # Diff едет боту вместе с событием. Бот сам старое состояние уже не
+    # достанет: коллектор только что записал новое в общую базу, и повторное
+    # сравнение «база против панели» даёт пусто — уведомление выходило с
+    # «Изменения не определены», хотя поле реально поменялось.
+    forward_body = body
+    if isinstance(sync_result, dict) and (sync_result.get("old_data") or sync_result.get("changes")):
+        try:
+            enriched = dict(data)
+            enriched["diff"] = {
+                "old_data": sync_result.get("old_data"),
+                "changes": sync_result.get("changes") or [],
+            }
+            forward_body = json.dumps(enriched, default=str).encode("utf-8")
+        except Exception as e:
+            logger.debug("Webhook diff attach failed for %s: %s", event, e)
 
     # 2. Forward to bot for Telegram notifications (fire-and-forget)
     # Uses INTERNAL_API_SECRET instead of X-Remnawave-Signature
@@ -1665,7 +1751,7 @@ async def collector_webhook(request: Request):
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.post(
                     bot_callback_url,
-                    content=body,
+                    content=forward_body,
                     headers={
                         "content-type": "application/json",
                         "X-Internal-Api-Secret": internal_secret,

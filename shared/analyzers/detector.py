@@ -31,6 +31,10 @@ from shared.analyzers.user_agent import UserAgentAnalyzer
 
 
 # Веса факторов (module-level for access from _validate_weights)
+# Со скольких разных провайдеров одновременные подключения перестают
+# объясняться одним человеком на мобильной сети (см. mass_sharing в check_user)
+_MASS_SHARING_MIN_ASNS = 3
+
 WEIGHTS = {
     'temporal': 0.20,      # Временной паттерн (было 0.25)
     'geo': 0.20,           # География (было 0.25)
@@ -95,6 +99,9 @@ class IntelligentViolationDetector:
         # Per-user SRH кэш: {user_uuid: (fetched_at, records)}
         self._srh_cache: Dict[str, tuple] = {}
         self._srh_cache_ttl_seconds = 300  # 5 минут
+        # Достройка профилей идёт в фоне; держим ссылку, чтобы за одним разом
+        # работала ровно одна задача, а не стопка недоделанных
+        self._baseline_bg_task: Optional[asyncio.Task] = None
     
     async def check_user(
         self,
@@ -397,7 +404,18 @@ class IntelligentViolationDetector:
             # temporal НЕ считаем «сильным сигналом» для bypass, если это мобильный / один ASN /
             # переключение сетей: CGNAT там штатно даёт пачку одновременных IP (temporal может
             # дойти до 100 при >5 IP), но это не явный шаринг. geo/hwid/ua остаются сильными всегда.
-            _temporal_suppressed = is_network_switch or _has_mobile or (is_same_asn and asn_ratio >= 0.8)
+            # Мобильная сеть и переключение сетей объясняют пару лишних адресов
+            # одного человека, но не толпу из разных операторов: при явном
+            # массовом шаринге (порог temporal уже включает CGNAT-буфер) от трёх
+            # и более провайдеров эти объяснения temporal-сигнал не гасят. Иначе
+            # один мобильный адрес среди шестнадцати сетей обнулял нарушение целиком.
+            distinct_asns = {
+                getattr(m, "asn", None) for m in active_ip_meta.values() if m is not None
+            } - {None}
+            mass_sharing = temporal_score.strong_sharing and len(distinct_asns) >= _MASS_SHARING_MIN_ASNS
+            _temporal_suppressed = not mass_sharing and (
+                is_network_switch or _has_mobile or (is_same_asn and asn_ratio >= 0.8)
+            )
             _strongest_signal = max(
                 geo_score.score, hwid_score.score, ua_score.score,
                 (0.0 if _temporal_suppressed else temporal_score.score),
@@ -417,7 +435,7 @@ class IntelligentViolationDetector:
             # Иначе мобильные юзеры, чей connection_type GeoIP не распознал как mobile,
             # ловят ложное нарушение (temporal 80 → floor 70), перебивающее ASN/consistency-снижения.
             # Реальный шаринг через одного провайдера всё равно ловится subnet-/HWID-проверками.
-            floor_suppressed = is_network_switch or _has_mobile or (is_same_asn and asn_ratio >= 0.8)
+            floor_suppressed = _temporal_suppressed
             if not floor_suppressed:
                 if temporal_score.score >= 80.0 and temporal_score.simultaneous_connections_count > 1:
                     raw_score = max(raw_score, 70.0)
@@ -951,8 +969,14 @@ class IntelligentViolationDetector:
         user_uuids: List[str],
         window_minutes: int = 60,
         excluded_analyzers_map: Optional[Dict[str, Optional[List[str]]]] = None,
+        live_connections: Optional[Dict[str, List[ActiveConnection]]] = None,
     ) -> Dict[str, Optional['ViolationScore']]:
-        """Batch violation check: prefetch all data, then analyze per-user in memory."""
+        """Batch violation check: prefetch all data, then analyze per-user in memory.
+
+        ``live_connections`` — живые соединения из карты активности коллектора,
+        по последней активности. Без них берутся строки базы, а там старт не
+        обновляется, и сидящие часами в одно окно одновременности не попадают.
+        """
         if not self.db.is_connected or not user_uuids:
             return {}
 
@@ -960,9 +984,13 @@ class IntelligentViolationDetector:
         if not config_service.get("violations_enabled", True):
             return {}
 
+        async def _given(value):
+            return value
+
         device_counts, active_conns_map, histories_30d, baselines, shared_hwids_map = await asyncio.gather(
             self.db.batch_get_user_devices_counts(user_uuids),
-            self.db.batch_get_active_connections(user_uuids, max_age_minutes=5),
+            _given({}) if live_connections is not None
+            else self.db.batch_get_active_connections(user_uuids, max_age_minutes=5),
             self.db.batch_get_connection_histories(user_uuids, days=30, limit_per_user=200),
             self.db.batch_get_user_baselines(user_uuids, max_age_seconds=self.profile_analyzer._BASELINE_CACHE_TTL),
             self.db.batch_get_shared_hwids(user_uuids),
@@ -974,7 +1002,7 @@ class IntelligentViolationDetector:
             srh_map = await self.db.batch_get_srh_records(user_uuids, limit_per_user=100)
 
         # Convert raw active_conns rows to ActiveConnection dataclasses
-        active_connections_map: Dict[str, List[ActiveConnection]] = {}
+        active_connections_map: Dict[str, List[ActiveConnection]] = dict(live_connections or {})
         for uid, rows in active_conns_map.items():
             active_connections_map[uid] = [
                 ActiveConnection(
@@ -1022,16 +1050,30 @@ class IntelligentViolationDetector:
                 results[uid] = None
 
         # Fire-and-forget: build baselines for users without one (non-blocking)
-        if needs_baseline_build:
-            async def _build_baselines_bg():
-                for uid in needs_baseline_build[:50]:
+        #
+        # Замыкание удерживает всё, что видит, поэтому в фон уходят только
+        # истории тех пятидесяти, кого реально достраиваем. Раньше задача
+        # захватывала histories_30d целиком — подключения за 30 дней по всему
+        # батчу, — и держала их до конца работы. Ссылка на задачу тоже
+        # сохраняется: без неё каждый цикл заводил новую поверх незавершённых,
+        # и на установке с десятками тысяч онлайна память росла до потолка за
+        # пару часов после рестарта.
+        if needs_baseline_build and (self._baseline_bg_task is None or self._baseline_bg_task.done()):
+            build_ids = list(needs_baseline_build[:50])
+            build_histories = {uid: histories_30d.get(uid) for uid in build_ids}
+
+            async def _build_baselines_bg(ids: List[str], histories: Dict[str, Any]):
+                for uid in ids:
                     try:
                         await self.profile_analyzer.build_baseline(
-                            uid, days=30, connection_history=histories_30d.get(uid)
+                            uid, days=30, connection_history=histories.get(uid)
                         )
                     except Exception:
                         pass
-            asyncio.create_task(_build_baselines_bg())
+
+            self._baseline_bg_task = asyncio.create_task(
+                _build_baselines_bg(build_ids, build_histories)
+            )
 
         return results
 
