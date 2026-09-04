@@ -11,6 +11,11 @@ services:
 
   web-backend:
     image: agellar/remnawave-admin-web-backend:sha256-d5de1b72109a2967710d5f4bdcbd7d8f50c1d4f1b06bfd366dd8486b60822fee
+    # QCode inference/usage credentials and backend-only plugin settings.
+    # Compose appends this after the base .env, so secrets are not exposed to
+    # the bot, frontend or optional collector services.
+    env_file:
+      - .env.backend-secrets
     ports: !reset []
     depends_on:
       bedolaga-tunnel:

@@ -1,0 +1,12 @@
+FROM agellar/remnawave-admin-web-backend:sha256-d5de1b72109a2967710d5f4bdcbd7d8f50c1d4f1b06bfd366dd8486b60822fee
+
+# Admin 4.7.1 only changes indexes/fillfactor in revisions 0103-0105. Keeping
+# those revision files in the previous application image lets a guarded
+# rollback run old code against the compatible 0105 schema without an
+# index-rebuilding downgrade or restoring a stale database snapshot.
+COPY alembic/versions/20260902_0103_drop_duplicate_connection_indexes.py /app/alembic/versions/
+COPY alembic/versions/20260902_0104_drop_unused_indexes.py /app/alembic/versions/
+COPY alembic/versions/20260903_0105_connections_fillfactor.py /app/alembic/versions/
+
+LABEL org.opencontainers.image.version="4.6.3-agellar.1-schema0105-rollback" \
+      org.opencontainers.image.description="Rollback-compatible 4.6.3 application with 0105 Alembic revision map"
