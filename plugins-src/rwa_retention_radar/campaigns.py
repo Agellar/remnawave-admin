@@ -41,6 +41,30 @@ BUTTON_LABELS = {
 }
 DEFAULT_BUTTON_LABEL = "🎁 Вернуться со скидкой"
 
+
+def _parse_panel_timestamp(value: Any) -> Optional[datetime]:
+    """Best-effort ISO parser for untrusted JSON cached from the panel."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif value:
+        try:
+            parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _recent_panel_activity(value: Any, window_minutes: int) -> bool:
+    parsed = _parse_panel_timestamp(value)
+    if parsed is None:
+        return False
+    age_seconds = (datetime.now(timezone.utc) - parsed).total_seconds()
+    return -30.0 <= age_seconds <= max(1, int(window_minutes)) * 60.0
+
 # Куда ведёт кнопка: кабинет как Mini App. Параметр включает
 # автоприменение — кабинет сам найдёт активный оффер человека, применит
 # скидку и откроет тарифы.
@@ -127,15 +151,35 @@ async def _incident_affected_users(
     if not nodes:
         return set()
     rows = await db.fetch(
-        """SELECT DISTINCT user_uuid FROM user_connections
-            WHERE node_uuid=ANY($1::uuid[])
-              AND connected_at >= NOW()-make_interval(mins => $2)
-              AND user_uuid=ANY($3::uuid[])""",
+        """SELECT u.uuid::text AS user_uuid,
+                  EXISTS (
+                      SELECT 1
+                        FROM user_connections c
+                       WHERE c.user_uuid = u.uuid
+                         AND c.node_uuid = ANY($1::uuid[])
+                         AND c.connected_at >=
+                             NOW() - make_interval(mins => $2)
+                  ) AS recent_connection,
+                  u.raw_data -> 'userTraffic' ->> 'onlineAt' AS online_at,
+                  u.raw_data -> 'userTraffic' ->> 'lastConnectedNodeUuid'
+                      AS live_node_uuid
+             FROM users u
+            WHERE u.uuid = ANY($3::uuid[])""",
         sorted(nodes),
         int(safety["incident_lookback_minutes"]),
         values,
     )
-    return {str(row["user_uuid"]) for row in rows}
+    active_nodes = {str(node).lower() for node in nodes}
+    window_minutes = int(safety["incident_lookback_minutes"])
+    return {
+        str(row["user_uuid"])
+        for row in rows
+        if bool(row.get("recent_connection"))
+        or (
+            str(row.get("live_node_uuid") or "").lower() in active_nodes
+            and _recent_panel_activity(row.get("online_at"), window_minutes)
+        )
+    }
 
 
 async def _active_throttled_users(

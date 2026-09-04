@@ -202,14 +202,20 @@ async def test_support_uses_same_explicit_false_positive_review_filter():
 async def test_retention_outage_scan_is_bounded_to_current_recipient_scope(monkeypatch):
     monkeypatch.setattr(campaigns, "active_node_uuids", AsyncMock(return_value={USER_B}))
     db = AsyncMock()
-    db.fetch.return_value = [{"user_uuid": USER_A}]
+    db.fetch.return_value = [{
+        "user_uuid": USER_A,
+        "recent_connection": True,
+        "online_at": None,
+        "live_node_uuid": None,
+    }]
     safety = {"suppress_active_incidents": True, "incident_lookback_minutes": 60}
 
     assert await campaigns._incident_affected_users(db, safety, [USER_A, USER_A]) == {USER_A}
 
     sql, nodes, minutes, candidates = db.fetch.await_args.args
     assert (nodes, minutes, candidates) == ([USER_B], 60, [USER_A])
-    assert "user_uuid=ANY($3::uuid[])" in sql
+    assert "u.uuid = ANY($3::uuid[])" in sql
+    assert "c.connected_at" in sql
     assert "violations" not in sql
     db.execute.assert_not_awaited()
 

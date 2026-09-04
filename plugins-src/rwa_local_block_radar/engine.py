@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
+from uuid import UUID
 from rwa_incident_hub import resolve as resolve_incident, upsert as upsert_incident
 
 from . import settings as settings_mod, store
@@ -9,6 +11,46 @@ from . import settings as settings_mod, store
 MIN_BASELINE_HOURS = 5
 MIN_BASELINE_SAMPLES = 60
 RESTART_SUPPRESSION_MINUTES = 10
+
+
+def _parse_panel_timestamp(value: Any) -> datetime | None:
+    """Parse cached ``onlineAt`` defensively; malformed JSON is not evidence."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif value:
+        try:
+            parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _live_user_node_pairs(
+    rows: list[dict], enabled_node_uuids: set[str], window_minutes: int
+) -> list[tuple[str, str]]:
+    """Return bounded, validated user/node pairs from the current panel snapshot."""
+    now = datetime.now(timezone.utc)
+    enabled = {value.lower() for value in enabled_node_uuids}
+    pairs: set[tuple[str, str]] = set()
+    for row in rows:
+        online_at = _parse_panel_timestamp(row.get("online_at"))
+        if online_at is None:
+            continue
+        age_seconds = (now - online_at).total_seconds()
+        if not (-30.0 <= age_seconds <= max(1, int(window_minutes)) * 60.0):
+            continue
+        try:
+            user_uuid = str(UUID(str(row.get("user_uuid") or "")))
+            node_uuid = str(UUID(str(row.get("live_node_uuid") or "")))
+        except (ValueError, AttributeError, TypeError):
+            continue
+        if node_uuid.lower() in enabled:
+            pairs.add((user_uuid, node_uuid))
+    return sorted(pairs)
 
 
 def classify_transport(tag: str | None) -> str:
@@ -43,15 +85,82 @@ async def current_nodes(db, window_minutes: int) -> list[dict]:
            FROM nodes WHERE NOT COALESCE(is_disabled, false)
            ORDER BY name"""
     )
+    live_users = await db.fetch(
+        """SELECT uuid::text AS user_uuid,
+                  raw_data -> 'userTraffic' ->> 'onlineAt' AS online_at,
+                  raw_data -> 'userTraffic' ->> 'lastConnectedNodeUuid'
+                      AS live_node_uuid
+             FROM users
+            WHERE status = 'ACTIVE'
+              AND raw_data -> 'userTraffic' ->> 'onlineAt' IS NOT NULL
+              AND raw_data -> 'userTraffic' ->> 'lastConnectedNodeUuid' IS NOT NULL"""
+    )
+    enabled_nodes = {str(row["node_uuid"]) for row in nodes}
+    live_pairs = _live_user_node_pairs(live_users, enabled_nodes, window_minutes)
+    live_user_uuids = [item[0] for item in live_pairs]
+    live_node_uuids = [item[1] for item in live_pairs]
     tags = await db.fetch(
-        """SELECT node_uuid::text AS node_uuid,
-                  device_info->>'inbound_tag' AS inbound_tag, COUNT(*)::int AS hits
-           FROM user_connections
-           WHERE connected_at >= NOW() - make_interval(mins => $1)
-             AND COALESCE(device_info->>'inbound_tag', '') <> ''
-           GROUP BY node_uuid, device_info->>'inbound_tag'
-           ORDER BY node_uuid, hits DESC""",
+        """WITH live_pairs AS (
+               SELECT *
+                 FROM unnest($2::uuid[], $3::uuid[])
+                      AS pair(user_uuid, node_uuid)
+           ),
+           recent AS (
+               SELECT node_uuid, user_uuid,
+                      device_info->>'inbound_tag' AS inbound_tag
+                 FROM user_connections c
+                WHERE c.connected_at >= NOW() - make_interval(mins => $1)
+                  AND c.node_uuid IS NOT NULL
+                  AND COALESCE(c.device_info->>'inbound_tag', '') <> ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM live_pairs p
+                       WHERE p.user_uuid = c.user_uuid
+                         AND p.node_uuid = c.node_uuid
+                  )
+           ),
+           live_latest AS (
+               SELECT DISTINCT ON (c.user_uuid, c.node_uuid)
+                      c.node_uuid, c.user_uuid,
+                      c.device_info->>'inbound_tag' AS inbound_tag
+                 FROM user_connections c
+                 JOIN live_pairs p
+                   ON p.user_uuid = c.user_uuid AND p.node_uuid = c.node_uuid
+                WHERE COALESCE(c.device_info->>'inbound_tag', '') <> ''
+                ORDER BY c.user_uuid, c.node_uuid, c.connected_at DESC, c.id DESC
+           ),
+           evidence AS (
+               -- Prefer one latest same-node vote per validated live user.
+               -- Recent starts remain a bounded fallback when the panel's
+               -- current-user snapshot has no usable evidence for a node.
+               SELECT node_uuid, inbound_tag, 0::bigint AS live_hits,
+                      COUNT(*)::bigint AS recent_hits
+                 FROM recent GROUP BY node_uuid, inbound_tag
+               UNION ALL
+               SELECT node_uuid, inbound_tag, COUNT(*)::bigint AS live_hits,
+                      0::bigint AS recent_hits
+                 FROM live_latest GROUP BY node_uuid, inbound_tag
+           ),
+           totals AS (
+               SELECT node_uuid, inbound_tag, SUM(live_hits) AS live_hits,
+                      SUM(recent_hits) AS recent_hits
+                 FROM evidence GROUP BY node_uuid, inbound_tag
+           ),
+           ranked AS (
+               SELECT *, ROW_NUMBER() OVER (
+                          PARTITION BY node_uuid
+                          ORDER BY (live_hits > 0) DESC, live_hits DESC,
+                                   recent_hits DESC, inbound_tag
+                      ) AS preference
+                 FROM totals
+           )
+           SELECT node_uuid::text AS node_uuid, inbound_tag,
+                  (live_hits + recent_hits)::int AS hits
+             FROM ranked
+            WHERE preference = 1
+            ORDER BY node_uuid""",
         window_minutes,
+        live_user_uuids,
+        live_node_uuids,
     )
     primary: dict[str, str] = {}
     for item in tags:

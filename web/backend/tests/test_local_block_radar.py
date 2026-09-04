@@ -72,7 +72,7 @@ def test_manifest_uses_builtin_block_radar_ui_without_license():
     item = manifest()
     assert item.id == "block_radar"
     assert item.billing == "free"
-    assert item.version == "0.7.5"
+    assert item.version == "0.7.6"
     assert "edit" in item.rbac_resources["block_radar"]
     assert item.navigation[0].path == "/plugins/block-radar"
     assert item.navigation[0].permission == ("block_radar", "view")

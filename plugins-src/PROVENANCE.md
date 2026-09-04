@@ -1,9 +1,15 @@
 # Local plugin compatibility and provenance
 
-This compatibility pass is based on the official Remnawave Admin `4.6.3`
-release (`b99ffde54e1483195df6a7b0e2e5c97f73aeb071`) merged into this tree.
+This compatibility pass is based on the official Remnawave Admin `4.7.1`
+release (`a3bc5a63191665ac13c59b40ba2a466f34157e04`) merged into this tree.
 The relevant upstream contracts are:
 
+- `shared/db/connections.py` and `web/backend/api/v2/collector.py` for the
+  4.7.1 connection model: `connected_at` remains the session start rather
+  than being rewritten as a heartbeat;
+- `users.raw_data.userTraffic.onlineAt` together with
+  `lastConnectedNodeUuid` for bounded current-user activity, and
+  `nodes.users_online` for the panel-maintained current node population;
 - `alembic/versions/20260823_0102_user_throttles.py` for the optional
   `user_throttles` table;
 - `shared/agent_version.py` for the required Node Agent `1.8.0` baseline;
@@ -18,9 +24,9 @@ Adapted local plugin versions:
 
 | Plugin | Version | Compatibility behavior |
 |---|---:|---|
-| Smart Support | 1.4.5 | Full-window recurrence counts; annulled detections are not active accusations; current throttle context retained |
-| Retention Radar | 1.2.5 | Incident checks limited to current recipients; active throttles and live-send safety gates retained |
-| Local Block Radar | 0.7.5 | Shared Agent version baseline, privacy-safe rollout context, Sonnet distinguishes nDPI/P2P from blocking evidence |
+| Smart Support | 1.4.6 | Long-lived current sessions use validated `onlineAt` + node identity; recent node history remains visible; cluster share uses `nodes.users_online` |
+| Retention Radar | 1.2.6 | Incident suppression combines bounded current-user activity with recent connection history; active throttles and live-send safety gates retained |
+| Local Block Radar | 0.7.6 | Transport labels prefer validated current-user/node evidence and fall back to recent starts; Sonnet remains explanatory only |
 | Incident Center | 0.1.3 | Explicit false-positive reviews no longer suppress support/retention; snoozes and unclear reviews still do |
 | Live Flow | 0.17.0+agellar.2 | Official v0.17.0 remains current; local RBAC, scope, limits, and performance changes retained |
 
@@ -31,7 +37,7 @@ fork the upstream throttle API.
 
 Official Live Flow release/tag/main were rechecked on 2026-08-28 and remain
 `c84cadde9aa2f31e70ebbd32bc1ebb0ba3d18b49`. Its security regression suite passes
-against Admin 4.6.3; no artificial upstream version bump was made.
+against Admin 4.7.1; no artificial upstream version bump was made.
 
 The official Smart Support/Retention catalogue at
 `https://license.nexuslink.ru/v1/catalog` timed out from both the workstation

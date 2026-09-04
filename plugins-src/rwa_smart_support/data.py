@@ -31,6 +31,31 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _parse_panel_timestamp(value: Any) -> Optional[datetime]:
+    """Parse a panel ISO timestamp without letting malformed cache data fail a report."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif value:
+        try:
+            parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _recent_panel_activity(value: Any, window_minutes: int) -> bool:
+    """Trust ``onlineAt`` only inside a bounded window and small clock skew."""
+    parsed = _parse_panel_timestamp(value)
+    if parsed is None:
+        return False
+    age_seconds = (_now() - parsed).total_seconds()
+    return -30.0 <= age_seconds <= max(1, int(window_minutes)) * 60.0
+
+
 def is_globally_routable_ip(value: Any) -> bool:
     """Only public unicast addresses may contribute to abuse heuristics."""
     if value is None:
@@ -446,11 +471,7 @@ def platform_of(devices: List[Dict[str, Any]]) -> Optional[str]:
 async def nodes_section(db, user_uuid: str, hours: int = 24) -> List[Dict[str, Any]]:
     rows = await db.fetch(
         """WITH touched AS (
-               SELECT node_uuid,
-                       BOOL_OR(
-                           disconnected_at IS NULL
-                           AND connected_at >= NOW() - INTERVAL '15 minutes'
-                       ) AS active_here,
+           SELECT node_uuid,
                       MAX(connected_at) AS last_seen
                FROM user_connections
                WHERE user_uuid = $1::uuid
@@ -460,19 +481,43 @@ async def nodes_section(db, user_uuid: str, hours: int = 24) -> List[Dict[str, A
            )
            SELECT n.uuid, n.name, n.address, n.is_connected, n.is_disabled,
                   n.cpu_usage, n.memory_usage, n.disk_usage, n.metrics_updated_at,
-                  t.active_here
-           FROM touched t JOIN nodes n ON n.uuid = t.node_uuid
-           ORDER BY t.last_seen DESC""",
+                  t.last_seen AS history_last_seen,
+                  u.raw_data -> 'userTraffic' ->> 'onlineAt' AS online_at,
+                  u.raw_data -> 'userTraffic' ->> 'lastConnectedNodeUuid'
+                      AS live_node_uuid
+             FROM nodes n
+             LEFT JOIN touched t ON t.node_uuid = n.uuid
+             LEFT JOIN users u ON u.uuid = $1::uuid
+            WHERE t.node_uuid IS NOT NULL
+               OR lower(n.uuid::text) = lower(
+                      u.raw_data -> 'userTraffic' ->> 'lastConnectedNodeUuid'
+                  )
+            ORDER BY (
+                         lower(n.uuid::text) = lower(
+                             u.raw_data -> 'userTraffic' ->> 'lastConnectedNodeUuid'
+                         )
+                     ) DESC,
+                     t.last_seen DESC NULLS LAST""",
         user_uuid, hours,
     )
     now = _now()
     out = []
     for r in rows:
+        node_uuid = str(r["uuid"])
+        live_node_uuid = str(r["live_node_uuid"] or "")
+        live_here = (
+            node_uuid.lower() == live_node_uuid.lower()
+            and _recent_panel_activity(r["online_at"], 15)
+        )
+        # A stale/malformed raw snapshot must not create a phantom node outside
+        # the requested connection-history window.
+        if r["history_last_seen"] is None and not live_here:
+            continue
         age = None
         if r["metrics_updated_at"]:
             age = int((now - r["metrics_updated_at"]).total_seconds())
         out.append({
-            "uuid": str(r["uuid"]),
+            "uuid": node_uuid,
             "name": r["name"],
             "address": r["address"],
             "is_connected": bool(r["is_connected"]),
@@ -481,7 +526,10 @@ async def nodes_section(db, user_uuid: str, hours: int = 24) -> List[Dict[str, A
             "memory_usage": r["memory_usage"],
             "disk_usage": r["disk_usage"],
             "metrics_age_seconds": age,
-            "user_active_here": bool(r["active_here"]),
+            # Since Admin 4.7.1 ``connected_at`` is the start of a session,
+            # not its heartbeat.  It keeps the node in history, while only
+            # the panel's bounded current snapshot may mark it active.
+            "user_active_here": live_here,
         })
     return out
 
@@ -624,30 +672,22 @@ async def compute_clusters(db, thresholds: Dict[str, float]) -> List[Dict[str, A
            )
            SELECT r.node_uuid, n.name,
                   COUNT(*) AS affected,
-                  ARRAY_AGG(r.user_uuid::text) AS members
+                  ARRAY_AGG(r.user_uuid::text) AS members,
+                  COALESCE(n.users_online, 0)::int AS total_users
            FROM recent r LEFT JOIN nodes n ON n.uuid = r.node_uuid
            WHERE r.cnt >= $2
-           GROUP BY r.node_uuid, n.name
+           GROUP BY r.node_uuid, n.name, n.users_online
            HAVING COUNT(*) >= $3""",
         node_window,
         int(thresholds["cluster_node_reconnects_per_user"]),
         int(thresholds["cluster_node_min_affected"]),
     )
-    population_rows = await db.fetch(
-        """SELECT node_uuid, COUNT(DISTINCT user_uuid)::int AS total_users
-             FROM user_connections
-            WHERE connected_at >= NOW() - make_interval(mins => $1)
-              AND node_uuid IS NOT NULL
-            GROUP BY node_uuid""",
-        node_window,
-    )
-    node_populations = {
-        str(row["node_uuid"]): int(row["total_users"] or 0)
-        for row in population_rows
-    }
     for r in node_rows:
         affected = int(r["affected"])
-        node_population = node_populations.get(str(r["node_uuid"]), 0)
+        # ``connected_at`` counts starts, so a long-lived online user may have
+        # no row in the reconnect window.  The panel-maintained node counter is
+        # the compatible 4.7.1 population denominator.
+        node_population = int(r["total_users"] or 0)
         if node_population < int(thresholds["cluster_node_min_total_users"]):
             continue
         if affected / max(node_population, 1) < float(thresholds["cluster_node_min_share"]):
