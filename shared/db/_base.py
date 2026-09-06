@@ -3,6 +3,7 @@ Database base class — connection pool, schema init, migrations.
 """
 import asyncio
 import json
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -256,6 +257,20 @@ CREATE INDEX IF NOT EXISTS idx_admin_permissions_role_id ON admin_permissions(ro
 """
 
 
+def _pin_process_utc() -> None:
+    """Перевести процесс в UTC — ради asyncpg.
+
+    Весь код хранит время как naive UTC, а asyncpg кодирует naive datetime
+    в timestamptz как локальное время процесса (pgproto/codecs/datetime.pyx:
+    ``obj.astimezone(utc)``). С TZ≠UTC в контейнере каждая такая метка
+    уезжала бы на смещение пояса: при Europe/Samara connected_at отставал
+    на четыре часа, окна «за последний час» пустели, радар слал нули.
+    """
+    os.environ["TZ"] = "UTC"
+    if hasattr(time, "tzset"):  # только POSIX; в контейнере есть всегда
+        time.tzset()
+
+
 class DatabaseBase:
     """
     Async database service for PostgreSQL operations.
@@ -290,7 +305,7 @@ class DatabaseBase:
             max_retries: Maximum number of connection attempts (default 5).
             retry_delay: Initial delay between retries in seconds, doubles each attempt.
         """
-        import os
+        _pin_process_utc()
 
         # Get database URL: parameter > env var > settings (fallback)
         if not database_url:
