@@ -10,12 +10,25 @@ export function getLocale(): string {
 }
 
 /**
+ * Дата из API как Date. Бэкенд может отдавать ISO без таймзоны (naive UTC) —
+ * JS парсит такое как ЛОКАЛЬНОЕ время, и всё, что показано или посчитано от
+ * такой строки, врёт на часовой пояс браузера. Явное смещение не трогаем.
+ */
+export function parseApiDate(dateStr: string): Date {
+  const normalized =
+    /T\d{2}:\d{2}/.test(dateStr) && !/(?:Z|[+-]\d{2}:?\d{2})$/.test(dateStr)
+      ? `${dateStr}Z`
+      : dateStr
+  return new Date(normalized)
+}
+
+/**
  * Standalone date formatter — for use outside React components (helpers, utils).
  * For React components, prefer the `useFormatters` hook.
  */
 export function formatDateUtil(dateStr: string | null | undefined): string {
   if (!dateStr) return '—'
-  const d = new Date(dateStr)
+  const d = parseApiDate(dateStr)
   if (isNaN(d.getTime())) return '—'
   return d.toLocaleString(getLocale(), {
     day: '2-digit',
@@ -31,7 +44,7 @@ export function formatDateUtil(dateStr: string | null | undefined): string {
  */
 export function formatDateShortUtil(dateStr: string | null | undefined): string {
   if (!dateStr) return '—'
-  const d = new Date(dateStr)
+  const d = parseApiDate(dateStr)
   if (isNaN(d.getTime())) return '—'
   return d.toLocaleDateString(getLocale())
 }
@@ -46,7 +59,7 @@ export function useFormatters() {
   const formatDate = useCallback(
     (dateStr: string | null | undefined) => {
       if (!dateStr) return '—'
-      const d = new Date(dateStr)
+      const d = parseApiDate(dateStr)
       if (isNaN(d.getTime())) return '—'
       return d.toLocaleString(locale, {
         day: '2-digit',
@@ -62,7 +75,7 @@ export function useFormatters() {
   const formatDateShort = useCallback(
     (dateStr: string | null | undefined) => {
       if (!dateStr) return '—'
-      const d = new Date(dateStr)
+      const d = parseApiDate(dateStr)
       if (isNaN(d.getTime())) return '—'
       return d.toLocaleDateString(locale)
     },
@@ -71,13 +84,7 @@ export function useFormatters() {
 
   const formatTimeAgo = useCallback(
     (dateStr: string): string => {
-      // Бэкенд может отдавать ISO без таймзоны (naive UTC) — без нормализации
-      // JS парсит такое как ЛОКАЛЬНОЕ время, и «N назад» врёт на часовой пояс.
-      const normalized =
-        /T\d{2}:\d{2}/.test(dateStr) && !/(?:Z|[+-]\d{2}:?\d{2})$/.test(dateStr)
-          ? `${dateStr}Z`
-          : dateStr
-      const date = new Date(normalized)
+      const date = parseApiDate(dateStr)
       const now = new Date()
       // лёгкий рассинхрон часов сервера/клиента не должен давать «из будущего»
       const diffMs = Math.max(0, now.getTime() - date.getTime())
@@ -90,7 +97,7 @@ export function useFormatters() {
       if (diffMin < 60) return t('common.minutesAgo', { count: diffMin })
       if (diffHour < 24) return t('common.hoursAgo', { count: diffHour })
       if (diffDay < 30) return t('common.daysAgo', { count: diffDay })
-      return formatDateShort(normalized)
+      return formatDateShort(dateStr)
     },
     [t, formatDateShort],
   )
