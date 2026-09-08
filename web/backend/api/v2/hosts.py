@@ -16,6 +16,7 @@ from web.backend.schemas.host import (
     HostCreate,
     HostUpdate,
 )
+from shared.remnawave_compat import read_host_internal_squads
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ router = APIRouter()
 def _map_host(h: dict) -> dict:
     """Маппинг полей хоста из camelCase API ответа."""
     inbound = h.get('inbound', {})
+    internal_squads_mode, internal_squads = read_host_internal_squads(h)
     return dict(
         uuid=h.get('uuid'),
         remark=h.get('remark', ''),
@@ -50,7 +52,9 @@ def _map_host(h: dict) -> dict:
         shuffle_host=h.get('shuffleHost', False),
         mihomo_x25519=h.get('mihomoX25519', False),
         nodes=h.get('nodes'),
-        excluded_internal_squads=h.get('excludedInternalSquads'),
+        excluded_internal_squads=(internal_squads if internal_squads_mode == 'EXCLUDE' else None),
+        internal_squads_mode=internal_squads_mode,
+        internal_squads=internal_squads,
     )
 
 

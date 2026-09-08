@@ -53,6 +53,10 @@ class HostListItem(HostBase):
     # Node associations
     nodes: Optional[list] = None
     excluded_internal_squads: Optional[list] = None
+    # Remnawave 3.4+ represents the filter as {mode, squads}.  Keep the old
+    # exclusion field for API consumers while exposing the lossless shape.
+    internal_squads_mode: Optional[str] = None
+    internal_squads: Optional[list] = None
     # Access-policy scope for the current admin
     allowed_actions: Optional[List[str]] = None
 

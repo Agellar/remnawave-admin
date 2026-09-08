@@ -52,6 +52,26 @@ class TestMapHost:
         assert result["verify_peer_cert_by_name"] is False
         assert result["pinned_peer_cert_sha256"] is None
 
+    def test_map_host_accepts_remnawave_34_internal_squads(self):
+        from web.backend.api.v2.hosts import _map_host
+        raw = dict(MOCK_HOST_API)
+        raw.pop("excludedInternalSquads")
+        raw["internalSquads"] = {"mode": "EXCLUDE", "squads": ["squad-1"]}
+        result = _map_host(raw)
+        assert result["internal_squads_mode"] == "EXCLUDE"
+        assert result["internal_squads"] == ["squad-1"]
+        assert result["excluded_internal_squads"] == ["squad-1"]
+
+    def test_map_host_does_not_mislabel_allow_only_as_exclusions(self):
+        from web.backend.api.v2.hosts import _map_host
+        raw = dict(MOCK_HOST_API)
+        raw.pop("excludedInternalSquads")
+        raw["internalSquads"] = {"mode": "ALLOW_ONLY", "squads": ["squad-1"]}
+        result = _map_host(raw)
+        assert result["internal_squads_mode"] == "ALLOW_ONLY"
+        assert result["internal_squads"] == ["squad-1"]
+        assert result["excluded_internal_squads"] is None
+
     def test_null_bools_coerced_to_false(self):
         """Remnawave 2.8.0 присылает null в булевых полях (напр. verifyPeerCertByName
         без пиннинга) — валидация не должна падать, None приводится к False."""

@@ -14,6 +14,7 @@ from shared.exceptions import (  # re-exported for backward compat
 )
 from shared.http_client import BaseHttpClient
 from shared.logger import logger
+from shared.remnawave_compat import adapt_host_internal_squads_payload, parse_panel_version
 
 
 class RemnawaveApiClient(BaseHttpClient):
@@ -293,6 +294,39 @@ class RemnawaveApiClient(BaseHttpClient):
         data = await self._get("/api/system/stats/recap")
         await cache.set(CacheKeys.STATS_RECAP, data, CacheManager.STATS_TTL)
         return data
+
+    async def get_panel_version(self) -> str:
+        """Return the panel version used for versioned API payloads.
+
+        The recap endpoint is present on every supported v3 deployment.  A
+        malformed/missing version is rejected: guessing the host-squad shape
+        could silently broaden access on Remnawave 3.4.
+        """
+        # Host squad filters changed shape in Remnawave 3.4.  Never use the
+        # stats cache here: during a panel cutover a briefly stale 3.2 version
+        # could make us send the legacy field to 3.4, where it may be ignored.
+        # This probe only happens for the rare host writes that include a squad
+        # filter, so the extra request does not affect ordinary admin traffic.
+        data = await self.get_stats_recap(use_cache=False)
+        response = data.get("response", {}) if isinstance(data, dict) else {}
+        version = response.get("version") if isinstance(response, dict) else None
+        if parse_panel_version(version) is None:
+            raise ValidationError("Remnawave panel version is missing or invalid", field="version")
+        return version
+
+    async def adapt_host_payload(self, payload: dict) -> dict:
+        """Return a 3.2/3.4-compatible host payload.
+
+        Version discovery is skipped when the payload has no squad filter, so
+        ordinary host edits keep their existing request path and latency.
+        """
+        if not ({"excludedInternalSquads", "internalSquads"} & payload.keys()):
+            return dict(payload)
+        version = await self.get_panel_version()
+        try:
+            return adapt_host_internal_squads_payload(payload, version)
+        except ValueError as exc:
+            raise ValidationError(str(exc), field="internalSquads") from exc
 
     async def get_nodes_statistics(self) -> dict:
         """Получает статистику нод (последние 7 дней)."""
@@ -676,6 +710,7 @@ class RemnawaveApiClient(BaseHttpClient):
             payload["xrayJsonTemplateUuid"] = xray_json_template_uuid
         if excluded_internal_squads is not None:
             payload["excludedInternalSquads"] = excluded_internal_squads
+        payload = await self.adapt_host_payload(payload)
         result = await self._post("/api/hosts", json=payload)
         await cache.invalidate(CacheKeys.HOSTS)
         await cache.invalidate(CacheKeys.STATS)
@@ -683,6 +718,7 @@ class RemnawaveApiClient(BaseHttpClient):
 
     async def create_host_raw(self, payload: dict) -> dict:
         """Создание нового хоста из готового payload (для web backend)."""
+        payload = await self.adapt_host_payload(payload)
         result = await self._post("/api/hosts", json=payload)
         await cache.invalidate(CacheKeys.HOSTS)
         await cache.invalidate(CacheKeys.STATS)
@@ -778,6 +814,7 @@ class RemnawaveApiClient(BaseHttpClient):
             payload["xrayJsonTemplateUuid"] = xray_json_template_uuid
         if excluded_internal_squads is not None:
             payload["excludedInternalSquads"] = excluded_internal_squads
+        payload = await self.adapt_host_payload(payload)
         result = await self._patch("/api/hosts", json=payload)
         await cache.invalidate(CacheKeys.host(host_uuid))
         await cache.invalidate(CacheKeys.HOSTS)
@@ -785,6 +822,7 @@ class RemnawaveApiClient(BaseHttpClient):
 
     async def update_host_raw(self, payload: dict) -> dict:
         """Обновление хоста из готового payload (для web backend)."""
+        payload = await self.adapt_host_payload(payload)
         result = await self._patch("/api/hosts", json=payload)
         host_uuid = payload.get("uuid")
         if host_uuid:

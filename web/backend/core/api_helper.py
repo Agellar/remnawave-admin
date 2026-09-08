@@ -75,6 +75,7 @@ _CAMEL_TO_SNAKE = {
     "mihomoX25519": "mihomo_x25519",
     "xrayJsonTemplateUuid": "xray_json_template_uuid",
     "excludedInternalSquads": "excluded_internal_squads",
+    "internalSquads": "internal_squads",
     "xHttpExtraParams": "x_http_extra_params",
     "muxParams": "mux_params",
     "sockoptParams": "sockopt_params",
