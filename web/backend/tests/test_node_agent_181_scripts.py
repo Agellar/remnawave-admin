@@ -15,7 +15,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / "scripts"
-TARGET_DIGEST = "sha256:ebee9822755f26cbf88e8ac96de995d83449b29428509d7c5d5905af9c0fef14"
+TARGET_DIGEST = "sha256:830c5a33a8c5d0bcd784be78264663a278a57dd7469926ea24c5b8966a243e71"
 TARGET_REF = f"ghcr.io/case211/remnawave-admin-node-agent@{TARGET_DIGEST}"
 OLD_REF = "test/agent:old"
 OLD_IMAGE_ID = "sha256:old-test-image"
@@ -24,7 +24,7 @@ TARGET_IMAGE_ID = "sha256:target-test-image"
 
 def _effective_compose_guards():
     guards = []
-    for name in ("node-agent-1.8.0-preflight.sh", "update-node-agent-1.8.0.sh", "node-agent-1.8.0-verify.sh"):
+    for name in ("node-agent-1.8.1-preflight.sh", "update-node-agent-1.8.1.sh", "node-agent-1.8.1-verify.sh"):
         for line_number, line in enumerate((SCRIPTS / name).read_text(encoding="utf-8").splitlines(), 1):
             if "cfg=json.load(sys.stdin)" in line:
                 guards.append((f"{name}:{line_number}", line.split(" -c '", 1)[1].split("'", 1)[0]))
@@ -187,7 +187,7 @@ case "$1" in
         ;;
       *'assert not Settings().ndpi_enabled'*) [ "${TEST_NDPI_ON:-0}" = 0 ] ;;
       *AGENT_VERSION*)
-        if [ "$(current_ref)" = "$TEST_TARGET_REF" ]; then echo '1.8.0'; else echo '1.7.3'; fi
+        if [ "$(current_ref)" = "$TEST_TARGET_REF" ]; then echo '1.8.1'; else echo '1.8.0'; fi
         ;;
       *'for process in nDPId nDPIsrvd'*) [ "${TEST_NDPI_ON:-0}" = 0 ] ;;
       *'pgrep -x nDPId'*'pgrep -x nDPIsrvd'*) [ "${TEST_NDPI_ON:-0}" = 1 ] ;;
@@ -213,7 +213,7 @@ case "$1" in
         while [ "$1" != -c ]; do shift; done
         "$TEST_PYTHON" -c 'import os,sys,types; m=types.ModuleType("src.config"); m.Settings=types.SimpleNamespace(model_fields={"ndpi_enabled":types.SimpleNamespace(default=os.getenv("TEST_DEFAULT_NDPI", "false") == "true")}); sys.modules["src.config"]=m; exec(sys.argv[1])' "$2"
         ;;
-      *AGENT_VERSION*) echo '1.8.0' ;;
+      *AGENT_VERSION*) echo '1.8.1' ;;
       *) exit 0 ;;
     esac
     ;;
@@ -268,7 +268,7 @@ exit 0
         executable.write_text(content, encoding="utf-8", newline="\n")
         executable.chmod(0o755)
 
-    def run(name="update-node-agent-1.8.0.sh", *, wait_for_runner=True, **options):
+    def run(name="update-node-agent-1.8.1.sh", *, wait_for_runner=True, **options):
         script = tmp_path / name
         source = (SCRIPTS / name).read_text(encoding="utf-8")
         source = source.replace("/opt/remnawave-node-agent", _shell_path(install))
@@ -305,9 +305,9 @@ def _wait_runner(state: Path) -> None:
 
 
 @pytest.mark.parametrize("name", [
-    "node-agent-1.8.0-preflight.sh", "update-node-agent-1.8.0.sh", "node-agent-1.8.0-verify.sh",
+    "node-agent-1.8.1-preflight.sh", "update-node-agent-1.8.1.sh", "node-agent-1.8.1-verify.sh",
 ])
-def test_agent_180_scripts_are_lf_and_valid_shell(name):
+def test_agent_181_scripts_are_lf_and_valid_shell(name):
     raw = (SCRIPTS / name).read_bytes()
     assert b"\r" not in raw
     result = subprocess.run([_bash(), "-n", str(SCRIPTS / name)], capture_output=True, text=True)
@@ -331,7 +331,7 @@ def test_updater_rechecks_health_collector_and_ndpi_before_any_mutation(shell_ha
 
 def test_preflight_does_not_report_pass_when_collector_fails(shell_harness):
     _, backups, state, _, run = shell_harness
-    result = run("node-agent-1.8.0-preflight.sh", TEST_COLLECTOR_FAIL_AT=1)
+    result = run("node-agent-1.8.1-preflight.sh", TEST_COLLECTOR_FAIL_AT=1)
     assert result.returncode != 0
     assert "collector_probe=false" in result.stdout
     assert "preflight=pass" not in result.stdout
@@ -339,7 +339,7 @@ def test_preflight_does_not_report_pass_when_collector_fails(shell_harness):
     assert (state / "mutations").read_text() == ""
 
 
-@pytest.mark.parametrize("name", ["node-agent-1.8.0-preflight.sh", "update-node-agent-1.8.0.sh"])
+@pytest.mark.parametrize("name", ["node-agent-1.8.1-preflight.sh", "update-node-agent-1.8.1.sh"])
 @pytest.mark.parametrize(("filename", "error"), [
     ("docker-compose.yml", "compose_not_regular_file"),
     (".env", "env_not_regular_file"),
@@ -380,7 +380,7 @@ def test_config_symlinks_are_rejected_before_backup(shell_harness, name, filenam
     assert is_link.returncode == 0
 
 
-@pytest.mark.parametrize("name", ["node-agent-1.8.0-preflight.sh", "update-node-agent-1.8.0.sh"])
+@pytest.mark.parametrize("name", ["node-agent-1.8.1-preflight.sh", "update-node-agent-1.8.1.sh"])
 def test_disk_probe_uses_actual_docker_root_directory(shell_harness, name):
     install, _, state, _, run = shell_harness
     result = run(name)
@@ -434,7 +434,7 @@ def test_no_block_returns_before_oneshot_restarts_the_calling_container(shell_ha
     assert "result=success" in next(backups.glob("*/status.txt")).read_text()
 
 
-@pytest.mark.parametrize("name", ["node-agent-1.8.0-preflight.sh", "update-node-agent-1.8.0.sh"])
+@pytest.mark.parametrize("name", ["node-agent-1.8.1-preflight.sh", "update-node-agent-1.8.1.sh"])
 @pytest.mark.parametrize("binding", ["none", "wrong", "multiple"])
 def test_wrong_compose_project_is_rejected_before_mutation(shell_harness, name, binding):
     install, backups, state, original, run = shell_harness
@@ -446,7 +446,7 @@ def test_wrong_compose_project_is_rejected_before_mutation(shell_harness, name, 
     assert (install / "docker-compose.yml").read_text() == original
 
 
-@pytest.mark.parametrize("name", ["node-agent-1.8.0-preflight.sh", "update-node-agent-1.8.0.sh"])
+@pytest.mark.parametrize("name", ["node-agent-1.8.1-preflight.sh", "update-node-agent-1.8.1.sh"])
 def test_pending_compose_ndpi_enable_is_rejected_without_leaking_config(shell_harness, name):
     _, backups, state, _, run = shell_harness
     result = run(name, TEST_COMPOSE_NDPI="true")
@@ -460,7 +460,7 @@ def test_pending_compose_ndpi_enable_is_rejected_without_leaking_config(shell_ha
 @pytest.mark.parametrize("default", ["false", "true"])
 def test_missing_ndpi_compose_key_requires_confirmed_false_source_default(shell_harness, default):
     _, _, state, _, run = shell_harness
-    result = run("node-agent-1.8.0-preflight.sh", TEST_COMPOSE_NDPI="absent", TEST_DEFAULT_NDPI=default)
+    result = run("node-agent-1.8.1-preflight.sh", TEST_COMPOSE_NDPI="absent", TEST_DEFAULT_NDPI=default)
     assert (result.returncode == 0) is (default == "false")
     assert "must-not-be-logged" not in result.stdout + result.stderr
     assert (state / "mutations").read_text() == ""
@@ -509,7 +509,7 @@ def test_success_pins_exact_image_and_passes_independent_verify(shell_harness):
     assert f"image: {TARGET_REF}" in (install / "docker-compose.yml").read_text()
     assert (state / "up_count").read_text().strip() == "1"
     assert "--no-deps --force-recreate --pull never node-agent" in (state / "up_args").read_text()
-    verification = run("node-agent-1.8.0-verify.sh")
+    verification = run("node-agent-1.8.1-verify.sh")
     assert verification.returncode == 0, verification.stdout + verification.stderr
     assert "ndpi_off=true" in verification.stdout
     assert "rollout_status=success" in verification.stdout
@@ -530,7 +530,7 @@ def test_independent_verify_rejects_wrong_compose_container(shell_harness):
     _, _, _, _, run = shell_harness
     result = run()
     assert result.returncode == 0, result.stdout + result.stderr
-    verification = run("node-agent-1.8.0-verify.sh", TEST_BINDING="wrong")
+    verification = run("node-agent-1.8.1-verify.sh", TEST_BINDING="wrong")
     assert verification.returncode != 0
     assert "compose_container_mismatch" in verification.stdout
 

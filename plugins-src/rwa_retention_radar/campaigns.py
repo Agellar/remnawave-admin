@@ -157,9 +157,10 @@ async def _incident_affected_users(
                         FROM user_connections c
                        WHERE c.user_uuid = u.uuid
                          AND c.node_uuid = ANY($1::uuid[])
-                         AND c.connected_at >=
-                             NOW() - make_interval(mins => $2)
-                  ) AS recent_connection,
+                          AND c.connected_at >=
+                              NOW() - make_interval(mins => $2)
+                          AND c.connected_at <= NOW() + INTERVAL '30 seconds'
+                   ) AS recent_connection,
                   u.raw_data -> 'userTraffic' ->> 'onlineAt' AS online_at,
                   u.raw_data -> 'userTraffic' ->> 'lastConnectedNodeUuid'
                       AS live_node_uuid

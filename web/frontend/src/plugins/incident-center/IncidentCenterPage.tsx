@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Check, Clock, ShieldAlert } from '@/components/brand/icons'
+import { formatDateUtil } from '@/lib/useFormatters'
 
 import {
   fetchFreshness,
@@ -115,7 +116,7 @@ export default function IncidentCenterPage() {
                   <h2 className="text-sm font-medium text-white">{incident.title}</h2>
                 </div>
                 <div className="mt-1 text-[11px] text-dark-400">
-                  {incident.source_plugin} · {incident.kind} · {incident.transport ?? '—'} · {new Date(incident.updated_at).toLocaleString()}
+                  {incident.source_plugin} · {incident.kind} · {incident.transport ?? '—'} · {formatDateUtil(incident.updated_at)}
                 </div>
               </div>
               <span className="rounded bg-white/5 px-2 py-1 text-[10px] uppercase text-dark-200">{incident.operational_status}</span>

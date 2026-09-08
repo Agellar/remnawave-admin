@@ -189,6 +189,7 @@ async def _active_by_node(ctx, scope) -> dict[str, int] | None:
             active AS (
                 SELECT * FROM parsed
                 WHERE online_at > now() - make_interval(secs => $1)
+                  AND online_at <= now() + interval '30 seconds'
             )
             SELECT nu, count(*) AS c, (SELECT max(online_at) FROM active) AS as_of
             FROM active
@@ -445,6 +446,7 @@ async def _node_users_db(ctx, node, node_uuid: str, scope, *, page: int, limit: 
         online AS (
             SELECT * FROM parsed
             WHERE online_at > now() - make_interval(secs => $2)
+              AND online_at <= now() + interval '30 seconds'
         ),
         totals AS (
             SELECT count(*)::int AS total, max(online_at) AS as_of
@@ -471,6 +473,7 @@ async def _node_users_db(ctx, node, node_uuid: str, scope, *, page: int, limit: 
                 FROM user_connections c
                 WHERE c.user_uuid = o.user_uuid
                   AND (c.disconnected_at IS NULL OR c.connected_at > now() - interval '10 minutes')
+                  AND c.connected_at <= now() + interval '30 seconds'
                 ORDER BY c.ip_address, c.connected_at DESC
             ) dedup
             ORDER BY dedup.connected_at DESC NULLS LAST, dedup.ip_address
@@ -589,6 +592,7 @@ async def _classify_users_db(ctx, ids_str: list) -> dict[str, str]:
                 SELECT c.ip_address FROM user_connections c
                 WHERE c.user_uuid = u.uuid
                   AND (c.disconnected_at IS NULL OR c.connected_at > now() - interval '10 minutes')
+                  AND c.connected_at <= now() + interval '30 seconds'
                 ORDER BY c.connected_at DESC LIMIT 1
             ) c ON true
             LEFT JOIN ip_metadata m ON m.ip_address = c.ip_address
@@ -659,6 +663,7 @@ async def _users_rows(ctx, poller, live_users: list, with_node: bool = False) ->
                 FROM user_connections c
                 WHERE c.user_uuid = ANY($1::uuid[])
                   AND (c.disconnected_at IS NULL OR c.connected_at > now() - interval '10 minutes')
+                  AND c.connected_at <= now() + interval '30 seconds'
                 ORDER BY c.user_uuid, c.ip_address, c.connected_at DESC
             ),
             ranked AS (

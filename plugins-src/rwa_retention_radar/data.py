@@ -17,8 +17,24 @@ from typing import Any, Dict, List, Tuple
 # Ключи сегментов — они же в URL, в i18n и в таблице срезов.
 SEGMENTS = ("silent", "expiring", "lapsed", "stalled")
 
-_BASE_CTE = """
-WITH base AS (
+def _panel_timestamp_sql(expression: str) -> str:
+    """Parse an ISO panel timestamp without inheriting the DB session timezone."""
+    return rf"""CASE
+               WHEN {expression} ~
+                    '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}(\.[0-9]+)?(Z|[+-][0-9]{{2}}:?[0-9]{{2}})$'
+               THEN ({expression})::timestamptz
+               WHEN {expression} ~
+                    '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}(\.[0-9]+)?$'
+               THEN ({expression})::timestamp AT TIME ZONE 'UTC'
+           END"""
+
+
+_RAW_ONLINE_AT_SQL = "NULLIF(u.raw_data -> 'userTraffic' ->> 'onlineAt', '')"
+_PARSED_ONLINE_AT_SQL = _panel_timestamp_sql(_RAW_ONLINE_AT_SQL)
+
+
+_BASE_CTE = f"""
+WITH parsed AS (
     SELECT u.uuid,
            u.username,
            u.telegram_id,
@@ -28,8 +44,16 @@ WITH base AS (
            u.used_traffic_bytes,
            u.traffic_limit_bytes,
            u.tag,
-           NULLIF(u.raw_data -> 'userTraffic' ->> 'onlineAt', '')::timestamptz AS last_online
+           {_PARSED_ONLINE_AT_SQL} AS parsed_last_online
     FROM users u
+),
+base AS (
+    SELECT uuid, username, telegram_id, status, expire_at, created_at,
+           used_traffic_bytes, traffic_limit_bytes, tag,
+           CASE WHEN parsed_last_online <= NOW() + INTERVAL '30 seconds'
+                THEN parsed_last_online
+           END AS last_online
+      FROM parsed
 )
 """
 

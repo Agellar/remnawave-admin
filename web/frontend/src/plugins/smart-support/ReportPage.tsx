@@ -39,7 +39,7 @@ import {
   ThresholdBar,
 } from './primitives'
 import type { Hypothesis, ReportResponse, SessionEntry } from './types'
-import { formatDateUtil } from '@/lib/useFormatters'
+import { formatDateUtil, parseApiDate } from '@/lib/useFormatters'
 
 /**
  * /plugins/smart-support/report/:uuid — single-page diagnostic.
@@ -728,7 +728,7 @@ function CorrelationsCard({ report }: { report: ReportResponse }) {
           const minutes = Math.max(
             1,
             Math.round(
-              (new Date(c.window_end).getTime() - new Date(c.window_start).getTime()) / 60000,
+              (parseApiDate(c.window_end).getTime() - parseApiDate(c.window_start).getTime()) / 60000,
             ),
           )
           return (

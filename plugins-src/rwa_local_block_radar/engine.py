@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from html import escape
 from typing import Any
 from uuid import UUID
 from rwa_incident_hub import resolve as resolve_incident, upsert as upsert_incident
@@ -110,6 +111,7 @@ async def current_nodes(db, window_minutes: int) -> list[dict]:
                       device_info->>'inbound_tag' AS inbound_tag
                  FROM user_connections c
                 WHERE c.connected_at >= NOW() - make_interval(mins => $1)
+                  AND c.connected_at <= NOW() + INTERVAL '30 seconds'
                   AND c.node_uuid IS NOT NULL
                   AND COALESCE(c.device_info->>'inbound_tag', '') <> ''
                   AND NOT EXISTS (
@@ -125,8 +127,9 @@ async def current_nodes(db, window_minutes: int) -> list[dict]:
                  FROM user_connections c
                  JOIN live_pairs p
                    ON p.user_uuid = c.user_uuid AND p.node_uuid = c.node_uuid
-                WHERE COALESCE(c.device_info->>'inbound_tag', '') <> ''
-                ORDER BY c.user_uuid, c.node_uuid, c.connected_at DESC, c.id DESC
+                 WHERE COALESCE(c.device_info->>'inbound_tag', '') <> ''
+                   AND c.connected_at <= NOW() + INTERVAL '30 seconds'
+                 ORDER BY c.user_uuid, c.node_uuid, c.connected_at DESC, c.id DESC
            ),
            evidence AS (
                -- Prefer one latest same-node vote per validated live user.
@@ -225,8 +228,9 @@ async def recent_restart_nodes(
              FROM admin_audit_log
             WHERE action = ANY($1::text[])
               AND resource='nodes'
-              AND resource_id = ANY($2::text[])
-              AND created_at >= NOW() - make_interval(mins => $3)""",
+               AND resource_id = ANY($2::text[])
+               AND created_at >= NOW() - make_interval(mins => $3)
+               AND created_at <= NOW() + INTERVAL '30 seconds'""",
         ["node.restart", "nodes.restart"],
         values,
         max(1, int(minutes)),
@@ -360,10 +364,10 @@ async def _notify(
 
     title = "Локальный радар: восстановление" if resolved_event else "Локальный радар: просадка"
     body = (
-        f"Нода: <b>{row['node_name']}</b>\n"
-        f"Провайдер: <b>{row['provider_name']}</b>\n"
+        f"Нода: <b>{escape(str(row['node_name']))}</b>\n"
+        f"Провайдер: <b>{escape(str(row['provider_name']))}</b>\n"
         f"Онлайн: <b>{row['online']}</b>, норма: <b>{float(base['online']):.0f}</b>\n"
-        f"Транспорт: <code>{row['transport']}</code>"
+        f"Транспорт: <code>{escape(str(row['transport']))}</code>"
     )
     await panel_notify(
         title=title,

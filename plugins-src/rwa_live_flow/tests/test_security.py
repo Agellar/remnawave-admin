@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import shutil
 import subprocess
 import sys
@@ -406,9 +407,13 @@ def test_browser_still_escapes_user_controlled_html():
 def test_audited_upstream_pin_and_provenance_are_present():
     root = Path(__file__).resolve().parents[1]
     provenance = (root / "UPSTREAM.md").read_text(encoding="utf-8")
+    audit = json.loads((root / "AUDIT-PROVENANCE.json").read_text(encoding="utf-8"))
     assert UPSTREAM_VERSION == "0.17.0"
-    assert FORK_VERSION == "0.17.0+agellar.2"
+    assert FORK_VERSION == "0.17.0+agellar.3"
     assert UPSTREAM_COMMIT == "c84cadde9aa2f31e70ebbd32bc1ebb0ba3d18b49"
     assert UPSTREAM_COMMIT in provenance
+    assert "Remnawave Admin `4.7.2`" in provenance
     assert "805aaba053b9b5aa9ad42070ab731b54bf2472d3eab9f8373bf453c4934a6dfb" in provenance
+    assert audit["compatible_admin_release"] == "4.7.2"
+    assert audit["fork"]["version"] == FORK_VERSION
     assert (root / "LICENSE.upstream").is_file()

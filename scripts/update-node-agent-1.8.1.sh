@@ -1,16 +1,16 @@
 #!/bin/sh
 set -eu
 
-target_ref='ghcr.io/case211/remnawave-admin-node-agent@sha256:ebee9822755f26cbf88e8ac96de995d83449b29428509d7c5d5905af9c0fef14'
-target_digest='sha256:ebee9822755f26cbf88e8ac96de995d83449b29428509d7c5d5905af9c0fef14'
-expected_version='1.8.0'
+target_ref='ghcr.io/case211/remnawave-admin-node-agent@sha256:830c5a33a8c5d0bcd784be78264663a278a57dd7469926ea24c5b8966a243e71'
+target_digest='sha256:830c5a33a8c5d0bcd784be78264663a278a57dd7469926ea24c5b8966a243e71'
+expected_version='1.8.1'
 install_dir='/opt/remnawave-node-agent'
 container='remnawave-node-agent'
 service='node-agent'
 backup_root='/root/remnawave-node-agent-backups'
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-backup_dir="${backup_root}/${stamp}-pre-agent-1.8.0"
-unit="remnawave-agent-180-${stamp}"
+backup_dir="${backup_root}/${stamp}-pre-agent-1.8.1"
+unit="remnawave-agent-181-${stamp}"
 
 resolved="$(readlink -f -- "$install_dir")"
 [ "$resolved" = "$install_dir" ] || {
@@ -234,7 +234,7 @@ service='node-agent'
 status_file="$backup_dir/status.txt"
 
 case "$backup_dir" in
-  /root/remnawave-node-agent-backups/*-pre-agent-1.8.0) ;;
+  /root/remnawave-node-agent-backups/*-pre-agent-1.8.1) ;;
   *) exit 90 ;;
 esac
 [ "$(readlink -f -- "$install_dir")" = "$install_dir" ] || exit 91

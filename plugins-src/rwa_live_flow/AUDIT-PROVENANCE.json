@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "audited_at": "2026-08-26",
-  "compatibility_rechecked_at": "2026-09-04",
-  "compatible_admin_release": "4.7.1",
+  "compatibility_rechecked_at": "2026-09-08",
+  "compatible_admin_release": "4.7.2",
   "upstream": {
     "repository": "https://github.com/chudo-arky/rwa-plugin-live-flow",
     "release": "v0.17.0",
@@ -18,7 +18,7 @@
     "executable_sources_equal_after_eol_normalization": true
   },
   "fork": {
-    "version": "0.17.0+agellar.2",
+    "version": "0.17.0+agellar.3",
     "integration": "source baked into immutable backend image",
     "minimum_admin_version": "4.6.2",
     "production_touched": false

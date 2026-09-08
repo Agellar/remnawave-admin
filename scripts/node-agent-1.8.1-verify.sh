@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-target_ref='ghcr.io/case211/remnawave-admin-node-agent@sha256:ebee9822755f26cbf88e8ac96de995d83449b29428509d7c5d5905af9c0fef14'
-target_digest='sha256:ebee9822755f26cbf88e8ac96de995d83449b29428509d7c5d5905af9c0fef14'
+target_ref='ghcr.io/case211/remnawave-admin-node-agent@sha256:830c5a33a8c5d0bcd784be78264663a278a57dd7469926ea24c5b8966a243e71'
+target_digest='sha256:830c5a33a8c5d0bcd784be78264663a278a57dd7469926ea24c5b8966a243e71'
 install_dir='/opt/remnawave-node-agent'
 container='remnawave-node-agent'
 service='node-agent'
@@ -49,7 +49,7 @@ docker exec "$container" python -c 'import httpx; from src.config import Setting
   >/dev/null 2>&1 && collector_probe=true
 status='missing'
 backup_dir='missing'
-latest="$(find /root/remnawave-node-agent-backups -mindepth 1 -maxdepth 1 -type d -name '*-pre-agent-1.8.0' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)"
+latest="$(find /root/remnawave-node-agent-backups -mindepth 1 -maxdepth 1 -type d -name '*-pre-agent-1.8.1' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)"
 if [ -n "$latest" ] && [ -f "$latest/status.txt" ]; then
   status="$(sed -n 's/^result=//p' "$latest/status.txt" | head -1)"
   backup_dir="$(basename "$latest")"
@@ -61,7 +61,7 @@ printf 'compose_image=%s\nactual_image=%s\nimage_id=%s\nexpected_image_id=%s\nst
 [ "$image_id" = "$expected_image_id" ]
 [ "$state" = 'running' ]
 [ "$health" = 'healthy' ]
-[ "$version" = '1.8.0' ]
+[ "$version" = '1.8.1' ]
 [ "$repo_digest" = 'true' ]
 [ "$binaries" = 'true' ]
 [ "$ndpi_running" = 'false' ]
@@ -70,5 +70,5 @@ printf 'compose_image=%s\nactual_image=%s\nimage_id=%s\nexpected_image_id=%s\nst
 [ "$collector_log" = 'true' ]
 [ "$collector_probe" = 'true' ]
 [ "$status" = 'success' ]
-case "$backup_dir" in *-pre-agent-1.8.0) ;; *) exit 30 ;; esac
+case "$backup_dir" in *-pre-agent-1.8.1) ;; *) exit 30 ;; esac
 printf 'compose_container_match=true\neffective_compose_ndpi_off=true\n'

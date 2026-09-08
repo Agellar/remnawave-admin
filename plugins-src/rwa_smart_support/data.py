@@ -100,7 +100,9 @@ FROM users u
 LEFT JOIN LATERAL (
     SELECT ip_address, connected_at
     FROM user_connections
-    WHERE user_uuid = u.uuid AND connected_at >= NOW() - INTERVAL '30 days'
+    WHERE user_uuid = u.uuid
+      AND connected_at >= NOW() - INTERVAL '30 days'
+      AND connected_at <= NOW() + INTERVAL '30 seconds'
     ORDER BY connected_at DESC LIMIT 1
 ) c ON TRUE
 LEFT JOIN ip_metadata m ON m.ip_address = c.ip_address
@@ -149,6 +151,7 @@ async def search_users(
                 SELECT 1 FROM user_connections uc
                 WHERE uc.user_uuid = u.uuid AND uc.ip_address = $1
                   AND uc.connected_at >= NOW() - INTERVAL '30 days'
+                  AND uc.connected_at <= NOW() + INTERVAL '30 seconds'
             )
               AND {scope_sql}
             ORDER BY c.connected_at DESC NULLS LAST LIMIT $2""",
@@ -283,7 +286,8 @@ async def history_section(db, user_uuid: str, hours: int = 24) -> Dict[str, Any]
            FROM user_connections c
            LEFT JOIN ip_metadata m ON m.ip_address = c.ip_address
            WHERE c.user_uuid = $1::uuid
-             AND c.connected_at >= NOW() - make_interval(hours => $2)""",
+             AND c.connected_at >= NOW() - make_interval(hours => $2)
+             AND c.connected_at <= NOW() + INTERVAL '30 seconds'""",
         user_uuid, hours,
     )
 
@@ -296,7 +300,8 @@ async def history_section(db, user_uuid: str, hours: int = 24) -> Dict[str, Any]
            FROM user_connections c
            LEFT JOIN ip_metadata m ON m.ip_address = c.ip_address
            WHERE c.user_uuid = $1::uuid
-             AND c.connected_at >= NOW() - make_interval(hours => $2)""",
+             AND c.connected_at >= NOW() - make_interval(hours => $2)
+             AND c.connected_at <= NOW() + INTERVAL '30 seconds'""",
         user_uuid, hours,
     )
     public_rows = [r for r in identity_rows if is_globally_routable_ip(r["ip_address"])]
@@ -320,6 +325,7 @@ async def history_section(db, user_uuid: str, hours: int = 24) -> Dict[str, Any]
            LEFT JOIN nodes n ON n.uuid = c.node_uuid
            WHERE c.user_uuid = $1::uuid
              AND c.connected_at >= NOW() - make_interval(hours => $2)
+             AND c.connected_at <= NOW() + INTERVAL '30 seconds'
            ORDER BY c.connected_at DESC
            LIMIT 100""",
         user_uuid, hours,
@@ -392,6 +398,7 @@ async def client_section(db, user_uuid: str, latest_versions: Dict[str, str]) ->
     rows = await db.fetch(
         """SELECT user_agent, request_at FROM subscription_request_history
            WHERE user_uuid = $1::uuid AND user_agent IS NOT NULL
+             AND request_at <= NOW() + INTERVAL '30 seconds'
            ORDER BY request_at DESC LIMIT 50""",
         user_uuid,
     )
@@ -476,6 +483,7 @@ async def nodes_section(db, user_uuid: str, hours: int = 24) -> List[Dict[str, A
                FROM user_connections
                WHERE user_uuid = $1::uuid
                  AND connected_at >= NOW() - make_interval(hours => $2)
+                 AND connected_at <= NOW() + INTERVAL '30 seconds'
                  AND node_uuid IS NOT NULL
                GROUP BY node_uuid
            )
@@ -597,7 +605,8 @@ async def violations_recap_section(db, user_uuid: str) -> Dict[str, Any]:
                       WHERE action_taken IS DISTINCT FROM 'annulled') AS last_at
              FROM violations
             WHERE user_uuid = $1::uuid
-              AND detected_at > NOW() - make_interval(days => $2)""",
+              AND detected_at > NOW() - make_interval(days => $2)
+              AND detected_at <= NOW() + INTERVAL '30 seconds'""",
         user_uuid, days,
     )
     return {
@@ -616,6 +625,7 @@ async def violations_section(db, user_uuid: str, days: int = 14) -> List[Dict[st
                   action_taken
            FROM violations
            WHERE user_uuid = $1::uuid AND detected_at >= NOW() - make_interval(days => $2)
+             AND detected_at <= NOW() + INTERVAL '30 seconds'
              AND action_taken IS DISTINCT FROM 'annulled'
            ORDER BY detected_at DESC LIMIT 20""",
         user_uuid, days,
@@ -667,6 +677,7 @@ async def compute_clusters(db, thresholds: Dict[str, float]) -> List[Dict[str, A
                SELECT user_uuid, node_uuid, COUNT(*) AS cnt
                FROM user_connections
                WHERE connected_at >= NOW() - make_interval(mins => $1)
+                 AND connected_at <= NOW() + INTERVAL '30 seconds'
                  AND node_uuid IS NOT NULL
                GROUP BY 1, 2
            )

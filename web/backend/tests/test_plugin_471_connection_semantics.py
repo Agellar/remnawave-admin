@@ -1,4 +1,4 @@
-"""Admin 4.7.1 regressions for session-start versus live-activity semantics."""
+"""Admin 4.7.x regressions for session-start versus live-activity semantics."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -23,10 +23,10 @@ NODE_A = "10000000-0000-0000-0000-00000000000a"
 NODE_B = "10000000-0000-0000-0000-00000000000b"
 
 
-def test_only_materially_changed_plugins_have_471_versions():
-    assert support_version == "1.4.6"
-    assert retention_version == "1.2.6"
-    assert block_version == "0.7.6"
+def test_only_materially_changed_plugins_have_472_versions():
+    assert support_version == "1.4.7"
+    assert retention_version == "1.2.7"
+    assert block_version == "0.7.7"
 
 
 def _node_row(node_uuid: str, now: datetime, **values):
@@ -81,6 +81,7 @@ async def test_support_nodes_keep_long_lived_current_session_and_recent_history(
     assert "LEFT JOIN touched" in sql
     assert "lower(n.uuid::text) = lower(" in sql
     assert "disconnected_at IS NULL" not in sql
+    assert "connected_at <= NOW() + INTERVAL '30 seconds'" in sql
 
 
 @pytest.mark.asyncio
@@ -136,6 +137,7 @@ async def test_support_cluster_population_uses_panel_node_online_counter():
     sql = db.fetch.await_args.args[0]
     assert "n.users_online" in sql
     assert "COUNT(DISTINCT user_uuid)::int AS total_users" not in sql
+    assert "connected_at <= NOW() + INTERVAL '30 seconds'" in sql
 
 
 @pytest.mark.parametrize(
@@ -194,6 +196,7 @@ async def test_retention_incident_suppression_combines_current_and_recent(monkey
         [NODE_A], 60, [USER_A, USER_B, USER_C, USER_D]
     )
     assert "EXISTS" in sql and "lastConnectedNodeUuid" in sql and "onlineAt" in sql
+    assert "c.connected_at <= NOW() + INTERVAL '30 seconds'" in sql
 
 
 def test_retention_current_activity_rejects_null_malformed_and_future_values():
@@ -254,6 +257,7 @@ async def test_block_radar_transport_query_prefers_current_same_node_evidence():
     assert "NOT EXISTS" in tag_sql
     assert "ORDER BY (live_hits > 0) DESC" in tag_sql
     assert "c.connected_at DESC, c.id DESC" in tag_sql
+    assert tag_sql.count("c.connected_at <= NOW() + INTERVAL '30 seconds'") == 2
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -72,7 +73,7 @@ def test_manifest_uses_builtin_block_radar_ui_without_license():
     item = manifest()
     assert item.id == "block_radar"
     assert item.billing == "free"
-    assert item.version == "0.7.6"
+    assert item.version == "0.7.7"
     assert "edit" in item.rbac_resources["block_radar"]
     assert item.navigation[0].path == "/plugins/block-radar"
     assert item.navigation[0].permission == ("block_radar", "view")
@@ -98,6 +99,36 @@ def test_schema_prevents_duplicate_open_incidents():
     assert "WHERE resolved_at IS NULL" in store.DDL
     assert "feedback TEXT" in store.DDL
     assert "feedback_at TIMESTAMPTZ" in store.DDL
+
+
+@pytest.mark.asyncio
+async def test_notification_escapes_untrusted_infrastructure_labels(monkeypatch):
+    from web.backend.core import plugin_api
+
+    notify = AsyncMock()
+    monkeypatch.setattr(plugin_api, "panel_notify", notify)
+    row = {
+        "node_uuid": "00000000-0000-0000-0000-000000000001",
+        "node_name": '<img src=x onerror="alert(1)">',
+        "provider_name": "R&D <script>",
+        "online": 2,
+        "transport": "ws</code><script>",
+    }
+
+    await engine._notify(
+        SimpleNamespace(plugin_id="block_radar"),
+        row,
+        {"online": 10},
+        resolved_event=False,
+        alert_id=7,
+    )
+
+    body = notify.await_args.kwargs["body"]
+    assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in body
+    assert "R&amp;D &lt;script&gt;" in body
+    assert "ws&lt;/code&gt;&lt;script&gt;" in body
+    assert "<img" not in body
+    assert "<script>" not in body
 
 
 def test_ai_schema_and_prompt_are_infrastructure_only():

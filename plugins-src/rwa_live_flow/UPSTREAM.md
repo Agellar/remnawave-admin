@@ -6,7 +6,7 @@
 - Release tag target: `c84cadde9aa2f31e70ebbd32bc1ebb0ba3d18b49`
 - Upstream wheel SHA-256: `805aaba053b9b5aa9ad42070ab731b54bf2472d3eab9f8373bf453c4934a6dfb`
 - Vendored on: `2026-08-26`
-- Compatibility rechecked against Remnawave Admin `4.7.1`: `2026-09-04`
+- Compatibility rechecked against Remnawave Admin `4.7.2`: `2026-09-08`
 
 The executable Python sources in the release wheel, tag target, and audited
 `main` commit were byte-for-byte equivalent after line-ending normalisation.
@@ -31,4 +31,6 @@ Local hardening relative to upstream 0.17.0:
 - toolbar and personal-data pagers use separate styles, with explicit keyboard
   focus, labels, and themed scrollbars;
 - single-flight profile/classification caches;
+- a 30-second upper clock-skew bound on activity/history fallbacks, so
+  pre-4.7.2 future-shifted rows cannot masquerade as current activity;
 - focused security and compatibility tests in `tests/test_security.py`.

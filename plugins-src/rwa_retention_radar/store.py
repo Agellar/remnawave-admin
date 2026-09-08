@@ -98,7 +98,7 @@ async def save_snapshot(db, counts: Dict[str, int]) -> None:
     for segment, value in counts.items():
         await db.execute(
             """INSERT INTO retention_radar_daily (day, segment, users_count)
-               VALUES (CURRENT_DATE, $1, $2)
+               VALUES ((NOW() AT TIME ZONE 'UTC')::date, $1, $2)
                ON CONFLICT (day, segment)
                DO UPDATE SET users_count = EXCLUDED.users_count,
                              computed_at = NOW()""",
@@ -110,7 +110,8 @@ async def save_snapshot(db, counts: Dict[str, int]) -> None:
 async def trend(db, segment: str, days: int) -> List[Dict[str, object]]:
     rows = await db.fetch(
         """SELECT day, users_count FROM retention_radar_daily
-           WHERE segment = $1 AND day > CURRENT_DATE - $2::int
+           WHERE segment = $1
+             AND day > (NOW() AT TIME ZONE 'UTC')::date - $2::int
            ORDER BY day""",
         segment,
         int(days),
@@ -123,7 +124,8 @@ async def previous_value(db, segment: str) -> int | None:
     сегодня, истории ещё нет и дельту показывать нечестно."""
     value = await db.fetchval(
         """SELECT users_count FROM retention_radar_daily
-           WHERE segment = $1 AND day = CURRENT_DATE - 1""",
+           WHERE segment = $1
+             AND day = (NOW() AT TIME ZONE 'UTC')::date - 1""",
         segment,
     )
     return int(value) if value is not None else None

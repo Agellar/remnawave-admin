@@ -2,6 +2,6 @@
 
 from .store import active_for_nodes, active_node_uuids, ensure_schema, resolve, upsert
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 __all__ = ["active_for_nodes", "active_node_uuids", "ensure_schema", "resolve", "upsert"]

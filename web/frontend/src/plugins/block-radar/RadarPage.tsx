@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import LicenseBanner from '@/components/plugins/license'
 import { useHasPermission } from '@/components/PermissionGate'
 import { Button } from '@/components/ui/button'
+import { parseApiDate } from '@/lib/useFormatters'
 
 import DataList from './DataList'
 
@@ -411,7 +412,7 @@ function ReachabilityPanel({
   const healthyTargets = targets.filter((target) => target.state === 'healthy').length
   const lastProbeAt = data?.last_probe_at
     ?? targets.reduce<string | null>((latest, target) => (
-      !latest || new Date(target.sampled_at) > new Date(latest) ? target.sampled_at : latest
+      !latest || parseApiDate(target.sampled_at) > parseApiDate(latest) ? target.sampled_at : latest
     ), null)
 
   return (
@@ -740,7 +741,7 @@ function ProbeCountdown({
   if (running) {
     value = t('plugins.block_radar.reachability.timer_running')
   } else if (enabled && nextProbeAt) {
-    const target = new Date(nextProbeAt).getTime()
+    const target = parseApiDate(nextProbeAt).getTime()
     const seconds = Number.isFinite(target) ? Math.max(0, Math.ceil((target - now) / 1_000)) : 0
     const minutes = Math.floor(seconds / 60)
     value = t('plugins.block_radar.reachability.timer_next', {
@@ -1165,7 +1166,7 @@ function NodeDipCard({ dip }: { dip: RadarNodeDip }) {
 
 function formatTs(iso?: string | null): string {
   if (!iso) return '—'
-  const d = new Date(iso)
+  const d = parseApiDate(iso)
   if (Number.isNaN(d.getTime())) return '—'
   return d.toLocaleString()
 }

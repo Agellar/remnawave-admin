@@ -24,7 +24,7 @@ PLUGIN_NAME = "Живая схема трафика"
 DIST_NAME = "rwa-plugin-live-flow"
 UPSTREAM_VERSION = "0.17.0"
 UPSTREAM_COMMIT = "c84cadde9aa2f31e70ebbd32bc1ebb0ba3d18b49"
-FORK_VERSION = "0.17.0+agellar.2"
+FORK_VERSION = "0.17.0+agellar.3"
 
 
 def _own_version() -> str:

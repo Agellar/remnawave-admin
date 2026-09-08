@@ -124,7 +124,7 @@ def test_incident_center_manifest_is_free_and_operator_facing():
     item = incident_manifest()
     assert item.id == "incident_center"
     assert item.billing == "free"
-    assert item.version == "0.1.3"
+    assert item.version == "0.1.4"
     assert item.navigation[0].path == "/plugins/incident-center"
     assert item.navigation[0].permission == ("incident_center", "view")
 
@@ -162,7 +162,11 @@ async def test_incident_operations_aggregate_rollout_restarts_and_throttle_audit
     now = datetime.now(timezone.utc)
     db.fetch.side_effect = [
         [
-            {"node_uuid": "node-1", "name": "ready", "agent_version": "1.8.0"},
+            {
+                "node_uuid": "node-1",
+                "name": "ready",
+                "agent_version": incident_operations.MIN_COMPATIBLE_AGENT_VERSION,
+            },
             {"node_uuid": "node-2", "name": "rollout", "agent_version": "1.7.2"},
         ],
         [

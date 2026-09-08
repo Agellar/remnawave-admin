@@ -1,6 +1,6 @@
 # Live Flow security review and local-fork decision
 
-Audit date: 2026-08-22. Scope: every tracked source, test, packaging,
+Audit date: 2026-08-22; Admin compatibility rechecked: 2026-09-08. Scope: every tracked source, test, packaging,
 workflow, dependency and release/history record available from upstream at the
 pinned revisions in `UPSTREAM.md`.
 
@@ -13,7 +13,7 @@ pinned revisions in `UPSTREAM.md`.
   weak for a privileged in-process plugin: unsigned/moved tag, no artifact
   attestation.
 - **This local source fork: ALLOW WITH CONDITIONS.** Use only the pinned source
-  baked into an immutable remnawave-admin 4.5.6-or-newer backend image, after
+  baked into the compatibility-tested remnawave-admin 4.7.2 backend image, after
   the focused and upstream tests pass in the final merged tree. Grant
   `view_users` only to roles that are intentionally allowed to see login,
   Telegram ID, IP, ASN and location data.
@@ -42,6 +42,8 @@ Local hardening adds:
 - `truncated` propagation to aggregate/detail responses and visible UI notices;
 - single-flight caches plus non-overlapping, abortable browser polling paused
   while the document is hidden.
+- activity/history fallbacks reject rows more than 30 seconds in the future,
+  preventing pre-4.7.2 timezone-shifted history from appearing current.
 
 ## Remaining conditions and limitations
 
@@ -52,7 +54,7 @@ Local hardening adds:
   or move these controls to shared storage in a future revision.
 - A truncated poll cannot prove that an omitted user is offline. The UI marks
   such snapshots incomplete.
-- Schema/API compatibility is pinned to admin 4.5.6. Re-audit upstream changes
+- Schema/API compatibility was rechecked against admin 4.7.2. Re-audit upstream changes
   and re-run all tests before rebasing this directory.
 - No production deployment or production probe was performed by this audit.
 
