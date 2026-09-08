@@ -10,7 +10,7 @@
 import asyncio
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -65,11 +65,41 @@ def _parse_timestamp(s: str) -> datetime:
         return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+_TS_PREFIX = re.compile(r"^(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)")
+_OFFSET_STEP = timedelta(minutes=15)  # пояса кратны четверти часа
+
+
+def _log_utc_offset(lines: list[str], mtime: float) -> Optional[timedelta]:
+    """На сколько время в строках лога опережает UTC.
+
+    Xray пишет в лог локальное время своего контейнера (Ldate|Ltime без
+    LUTC), а mtime файла — момент той же записи по часам ядра. Их разница,
+    округлённая до четверти часа, и есть пояс ноды; задержка записи в неё
+    не попадает. Сравнить не с чем — None.
+    """
+    written = datetime.fromtimestamp(mtime, timezone.utc).replace(tzinfo=None)
+    for line in reversed(lines):
+        match = _TS_PREFIX.match(line.strip())
+        if match:
+            stamped = _parse_timestamp(match.group(1))
+            return round((stamped - written) / _OFFSET_STEP) * _OFFSET_STEP
+    return None
+
+
+def _log_time(ts_str: str, utc_offset: timedelta) -> datetime:
+    """Время строки лога в UTC."""
+    try:
+        return _parse_timestamp(ts_str) - utc_offset
+    except Exception:
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _parse_lines(
     lines: list[str],
     node_uuid: str,
     torrent_tag: str = "TORRENT",
     torrent_oracle=None,
+    utc_offset: timedelta = timedelta(0),
 ) -> tuple[list[ConnectionReport], list[TorrentEvent], int, int, int]:
     """
     Парсит строки лога Xray и возвращает подключения + торрент-события.
@@ -82,6 +112,9 @@ def _parse_lines(
     зашифрованный поток, DHT и uTP проходят мимо. Оракул отвечает на вопрос
     «по этому адресу только что видели торрент?»; чей это клиент, знает
     только лог, поэтому связка живёт здесь.
+
+    ``utc_offset`` — на сколько время в строках опережает UTC
+    (см. ``_log_utc_offset``); метки отдаются уже в UTC.
 
     Returns:
         (connections, torrent_events, lines_count, accepted_lines, matched_lines)
@@ -117,10 +150,7 @@ def _parse_lines(
             user_identifier = f"user_{user_id}"
             users_per_destination.setdefault(destination, set()).add(user_identifier)
 
-            try:
-                detected_at = _parse_timestamp(ts_str)
-            except Exception:
-                detected_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            detected_at = _log_time(ts_str, utc_offset)
 
             # Проверяем торрент-тег
             if outbound_tag.strip().upper() == torrent_tag.upper():
@@ -180,10 +210,7 @@ def _parse_lines(
         user_identifier = f"user_{user_id}"
         key = (user_identifier, client_ip)
 
-        try:
-            connected_at = _parse_timestamp(ts_str)
-        except Exception:
-            connected_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        connected_at = _log_time(ts_str, utc_offset)
 
         if key not in connections_map:
             connections_map[key] = (connected_at, user_identifier, "")
@@ -238,7 +265,35 @@ class _TorrentOracleMixin:
         return self.torrent_oracle if getattr(self, "_torrent_enabled", False) else None
 
 
-class XrayLogCollector(_TorrentOracleMixin, BaseCollector):
+class _LogClockMixin:
+    """Поправка на часы Xray — общая для обоих режимов чтения.
+
+    Xray ставит в строки локальное время своего контейнера, а агент живёт
+    в UTC и о поясе ноды не знает: у ноды с TZ=Europe/Samara подключения
+    уезжали на четыре часа в будущее. Пояс восстанавливается по mtime
+    файла и запоминается — в куске без единой метки поправка прежняя.
+    """
+
+    _utc_offset = timedelta(0)
+
+    def _calibrate(self, lines: list[str], mtime: Optional[float]) -> timedelta:
+        offset = _log_utc_offset(lines, mtime) if mtime is not None else None
+        if offset is not None and offset != self._utc_offset:
+            logger.info(
+                "Xray log clock is %+.2f h from UTC, timestamps adjusted",
+                offset.total_seconds() / 3600,
+            )
+            self._utc_offset = offset
+        return self._utc_offset
+
+    async def _mtime(self) -> Optional[float]:
+        try:
+            return (await asyncio.to_thread(self._log_path.stat)).st_mtime
+        except OSError:
+            return None
+
+
+class XrayLogCollector(_LogClockMixin, _TorrentOracleMixin, BaseCollector):
     """Читает access.log Xray и возвращает список подключений (accepted)."""
 
     def __init__(self, settings: Settings):
@@ -283,10 +338,12 @@ class XrayLogCollector(_TorrentOracleMixin, BaseCollector):
             logger.warning("Cannot read log file %s: %s", self._log_path, e)
             return []
 
+        lines = content.splitlines()
         tag = self._torrent_tag if self._torrent_enabled else "__DISABLED__"
         connections, torrent_events, lines_count, accepted_lines, matched_lines = _parse_lines(
-            content.splitlines(), self._node_uuid, torrent_tag=tag,
+            lines, self._node_uuid, torrent_tag=tag,
             torrent_oracle=self._oracle_if_enabled(),
+            utc_offset=self._calibrate(lines, stat.st_mtime),
         )
         self._last_torrent_events = torrent_events
 
@@ -312,7 +369,7 @@ def _read_tail(path: Path, size: int) -> str:
         return f.read().decode("utf-8", errors="replace")
 
 
-class XrayLogRealtimeCollector(_TorrentOracleMixin, BaseCollector):
+class XrayLogRealtimeCollector(_LogClockMixin, _TorrentOracleMixin, BaseCollector):
     """
     Real-time парсер access.log Xray.
     
@@ -487,6 +544,7 @@ class XrayLogRealtimeCollector(_TorrentOracleMixin, BaseCollector):
         connections, torrent_events, lines_count, accepted_lines, matched_lines = _parse_lines(
             new_lines, self._node_uuid, torrent_tag=tag,
             torrent_oracle=self._oracle_if_enabled(),
+            utc_offset=self._calibrate(new_lines, await self._mtime()),
         )
         self._last_torrent_events = torrent_events
 

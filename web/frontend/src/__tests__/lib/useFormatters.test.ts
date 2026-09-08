@@ -234,3 +234,32 @@ describe('formatDateShortUtil', () => {
     expect(output).toMatch(/12/)
   })
 })
+
+// ── Даты без таймзоны ──
+
+describe('naive ISO strings are read as UTC', () => {
+  const naive = '2026-09-06T10:00:46'
+  const aware = '2026-09-06T10:00:46Z'
+
+  it('parseApiDate treats a string without offset as UTC', async () => {
+    const { parseApiDate } = await import('@/lib/useFormatters')
+    expect(parseApiDate(naive).getTime()).toBe(Date.parse(aware))
+  })
+
+  it('parseApiDate leaves an explicit offset alone', async () => {
+    const { parseApiDate } = await import('@/lib/useFormatters')
+    expect(parseApiDate('2026-09-06T14:00:46+04:00').getTime()).toBe(Date.parse(aware))
+  })
+
+  it('hook formatters show the same moment with and without Z', () => {
+    const { result } = renderHook(() => useFormatters())
+    expect(result.current.formatDate(naive)).toBe(result.current.formatDate(aware))
+    expect(result.current.formatDateShort(naive)).toBe(result.current.formatDateShort(aware))
+  })
+
+  it('standalone formatters agree too', async () => {
+    const { formatDateUtil, formatDateShortUtil } = await import('@/lib/useFormatters')
+    expect(formatDateUtil(naive)).toBe(formatDateUtil(aware))
+    expect(formatDateShortUtil(naive)).toBe(formatDateShortUtil(aware))
+  })
+})
