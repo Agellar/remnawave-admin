@@ -10,7 +10,7 @@ services:
     ports: !reset []
 
   web-backend:
-    image: agellar/remnawave-admin-web-backend:sha256-e5d2452ab143b1d93644b4d4f9c969e783e4cbb138e43e84a22304e2abb76866
+    image: agellar/remnawave-admin-web-backend:sha256-a0b2401f2c3d7a32c445240c9d4a5b6486baee2f20118745942d3568f37a30c3
     # QCode inference/usage credentials and backend-only plugin settings.
     # Compose appends this after the base .env, so secrets are not exposed to
     # the bot, frontend or optional collector services.
@@ -25,10 +25,10 @@ services:
       RWA_LIVE_FLOW_USERS_PAGE: "500"
 
   web-collector:
-    image: agellar/remnawave-admin-web-backend:sha256-e5d2452ab143b1d93644b4d4f9c969e783e4cbb138e43e84a22304e2abb76866
+    image: agellar/remnawave-admin-web-backend:sha256-a0b2401f2c3d7a32c445240c9d4a5b6486baee2f20118745942d3568f37a30c3
 
   web-frontend:
-    image: agellar/remnawave-admin-web-frontend:sha256-d21cc60b559fb8029dc3dcdea8f7269d75a06be6cd9844b4d392e07b06ae5d9f
+    image: agellar/remnawave-admin-web-frontend:sha256-5fff35e8c98f776032e705b8e8ec6971f12e6a4cfc6612b9440ed82618ea6589
     ports: !reset []
 
   # Приватный канал к Bedolaga Bot Web API на 193.53.40.18.
