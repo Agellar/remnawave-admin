@@ -171,7 +171,51 @@
       "secret_scope_backend_only": true
     },
     "post_deploy": {
-      "status": "pending"
+      "status": "complete",
+      "created": "20260909T032653Z",
+      "backup_id": "20260909T032653Z-post-4.7.2",
+      "release_head": "105eba50750ed1bc76b2b41432ca521d3f070dfb",
+      "manifest_sha256": "92c1e81ca91a1ad7f5cf3189a895366466b71aa4500a03f4ddddf408227fa76c",
+      "verification_script_sha256": "12889489d929de0eac320718b6dacc1c9df83d75c59f683ef023d8806083cf57",
+      "files": 79,
+      "database_catalog_entries": 929,
+      "database_payload_read": true,
+      "database_restore_test": true,
+      "database_restore_migration": "0105",
+      "database_restore_no_send": true,
+      "database_restore_retention": true,
+      "git_bundle": true,
+      "git_bundle_empty_repo_restore": true,
+      "release_tag_in_bundle": true,
+      "recovery_stash_in_bundle": true,
+      "docker_archive": true,
+      "images_archived": 2,
+      "accepted_artifacts": true,
+      "approved_auxiliary_files": 7,
+      "approved_auxiliary_archive": true,
+      "approved_auxiliary_secret_scan": true,
+      "current_named_volumes_archived": [
+        "mail_certs",
+        "geoip_data"
+      ],
+      "current_volume_archives": true,
+      "current_volume_path_sets": true,
+      "current_volume_archive_member_sets": true,
+      "current_geoip_semantics": true,
+      "parent_volume_snapshots_retained": true,
+      "parent_recovery_aliases_verified": true,
+      "backend_image_plugin_preference": true,
+      "secret_scope_backend_only": true,
+      "root_only_permissions": true,
+      "no_send_unchanged": true,
+      "retention_disabled": true,
+      "scratch_resources_removed": true,
+      "space_reclamation": {
+        "unused_admin_images_removed": 3,
+        "build_cache_pruned": true,
+        "current_release_images_preserved": true,
+        "parent_rollback_images_preserved": true
+      }
     }
   },
   "images": {
