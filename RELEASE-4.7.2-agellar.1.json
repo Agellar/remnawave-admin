@@ -1,0 +1,195 @@
+{
+  "schema": 1,
+  "version": "4.7.2-agellar.1",
+  "released_at": "2026-09-08T23:35:57Z",
+  "source": {
+    "repository": "https://github.com/Agellar/remnawave-admin",
+    "candidate_branch": "upgrade-4.7.2-agellar",
+    "stable_branch": "plugins-agellar",
+    "candidate_commit": "16c14636464930b832e745d68e6c79dea7d86013",
+    "candidate_tree": "346a33cb359072947c558a66a270be55f6bf72e9",
+    "upstream_release": "4.7.2",
+    "upstream_commit": "5ec52e69935aef68a5398d912e0203af2472033e",
+    "image_pins_commit": "a67df0167cb751c6471c145c4d79b526884e7318"
+  },
+  "distribution": {
+    "scope": "production-host-local",
+    "registry_published": false,
+    "immutable_aliases": true
+  },
+  "compatibility": {
+    "migration_from": "0105",
+    "migration_to": "0105",
+    "app_mode": "full",
+    "node_agent": {
+      "target_version": "1.8.1",
+      "target_oci_digest": "sha256:830c5a33a8c5d0bcd784be78264663a278a57dd7469926ea24c5b8966a243e71",
+      "eligible_from_1_8_0": 6,
+      "legacy_1_5_0_untouched": 1,
+      "disconnected_unknown_untouched": 1,
+      "rollout_status": "complete",
+      "rollout_completed_at": "2026-09-09T01:16:02.260207Z",
+      "updated_to_1_8_1": 6,
+      "failed": 0,
+      "rolled_back": 0,
+      "stages_completed": 4,
+      "stage_shape": [
+        1,
+        1,
+        2,
+        2
+      ],
+      "pre_update_backups": 6,
+      "fresh_telemetry_verified": 6,
+      "timestamp_evidence": {
+        "verified": 2,
+        "not_exercised": 4
+      },
+      "active_target_commands_after": 0,
+      "final_version_counts": {
+        "1.8.1": 6,
+        "1.5.0": 1,
+        "unknown": 1
+      },
+      "no_send_unchanged": true,
+      "rollout_operator_sha256": "1f2ee886c1cd9c82ede8fd10f2bcac6de28bcf848836ca1099c00ab8c6105e3c",
+      "rollout_operator_tests_passed": 32
+    }
+  },
+  "plugins": {
+    "smart_support": "1.4.7",
+    "retention_radar": "1.2.7",
+    "block_radar": "0.7.7",
+    "incident_center": "0.1.4",
+    "live_flow": "0.17.0+agellar.3"
+  },
+  "plugin_runtime": {
+    "enabled": [
+      "smart_support",
+      "block_radar",
+      "incident_center",
+      "live_flow"
+    ],
+    "retention_radar": "disabled_404",
+    "adaptations": [
+      "UTC-safe shared date parsing",
+      "future-row guards for pre-4.7.2 history",
+      "Block Radar untrusted-label escaping",
+      "Sonnet prompt aligned with Admin 4.7.2 and Agent 1.8.1"
+    ]
+  },
+  "ai": {
+    "provider": "qcode",
+    "model": "claude-sonnet-4-6",
+    "smart_support_configured": true,
+    "block_radar_configured": true,
+    "qcode_usage_endpoint_healthy": true,
+    "configuration_inference_during_release": false
+  },
+  "tests": {
+    "release_image_backend_and_plugins": {
+      "passed": 2513,
+      "skipped": 1,
+      "failed": 0,
+      "network_disabled": true
+    },
+    "frontend": {
+      "test_files": 32,
+      "passed": 364,
+      "typecheck": true,
+      "production_build": true
+    },
+    "plugin_focused": {
+      "backend": 99,
+      "frontend": 40,
+      "false_positive_thresholds": 5,
+      "failed": 0
+    },
+    "node_agent": {
+      "passed": 54,
+      "failed": 0
+    },
+    "node_agent_rollout_scripts": {
+      "passed": 67,
+      "failed": 0
+    },
+    "release_guard": {
+      "sha256": "a1527dcf7cf903d74630e2355423589dfcc4a97bf90946855a5ae769ba22bb40",
+      "self_test": true,
+      "rollback_watchdog_armed_and_cancelled_after_accept": true
+    },
+    "independent_post_audit": {
+      "sha256": "7974aa1033d479a2b5b913cbd8e1c38ca0bce398cd1df8b03a010a33e597ac92",
+      "status": "PASS"
+    }
+  },
+  "production_verification": {
+    "backend_health": true,
+    "frontend_origin": true,
+    "tunnel_application_health": true,
+    "migration": "0105",
+    "backend_frontend_restarts": 0,
+    "backend_frontend_oom_killed": false,
+    "started_at_ingestion_markers": true,
+    "subscription_history_age_seconds_at_accept": 90,
+    "connection_history_age_seconds_at_accept": 13,
+    "globalping_continuous_cycle_advanced": true,
+    "new_live_campaigns": 0,
+    "new_sends": 0,
+    "new_campaign_arms": 0,
+    "no_send": true,
+    "retention_disabled": true,
+    "bot_running": false,
+    "collector_running": false,
+    "unrelated_containers_unchanged": true
+  },
+  "secret_scope": {
+    "shared_env_globalping_definition_count": 0,
+    "backend_only_secret_name_count": 4,
+    "frontend_backend_secret_name_count": 0,
+    "status": "PASS"
+  },
+  "effective_safety_settings": {
+    "unusual_hour_rule_enabled": false,
+    "geo_max_simultaneous_countries": 3,
+    "torrent_min_events": 5,
+    "torrent_min_peers": 3,
+    "automatic_soft_throttle": false,
+    "traffic_rate_auto_action": "notify",
+    "live_campaigns_enabled": false
+  },
+  "artifacts": {
+    "source_bundle_sha256": "8f47f346e8b4147f92d9f0134c7d5c39671d9d236adb60f8236ff72d24a09b97",
+    "frontend_dist_sha256": "a6cf47eb54f48b0cdcd2629bfc3d399bcecec250873bb3b14bd6d8e8bb5b6e52",
+    "accepted_run": "20260908T233557Z-4.7.2"
+  },
+  "backups": {
+    "pre_deploy": {
+      "created": "20260908T225522Z",
+      "manifest_sha256": "093a40576557c42a0d082f0f985873e445c54c0cb8bd98bf67ce02311185dbb8",
+      "isolated_database_restore": true,
+      "secret_scope_backend_only": true
+    },
+    "post_deploy": {
+      "status": "pending"
+    }
+  },
+  "images": {
+    "backend": {
+      "immutable_alias": "agellar/remnawave-admin-web-backend:sha256-a0b2401f2c3d7a32c445240c9d4a5b6486baee2f20118745942d3568f37a30c3",
+      "image_id": "sha256:a0b2401f2c3d7a32c445240c9d4a5b6486baee2f20118745942d3568f37a30c3",
+      "size_bytes": 743227071
+    },
+    "frontend": {
+      "immutable_alias": "agellar/remnawave-admin-web-frontend:sha256-5fff35e8c98f776032e705b8e8ec6971f12e6a4cfc6612b9440ed82618ea6589",
+      "image_id": "sha256:5fff35e8c98f776032e705b8e8ec6971f12e6a4cfc6612b9440ed82618ea6589",
+      "size_bytes": 72817351
+    }
+  },
+  "known_limits": {
+    "legacy_agent_requires_separate_recovery": true,
+    "disconnected_unknown_agent_requires_separate_recovery": true,
+    "old_timezone_shifted_history_is_not_rewritten": true,
+    "interactive_browser_fps_verified": false
+  }
+}
